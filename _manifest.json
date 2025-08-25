@@ -1,0 +1,53 @@
+{
+  "manifest_version": 1,
+  "name": "日记插件 (Diary Plugin)",
+  "version": "2.0.0",
+  "description": "让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容",
+  "author": {
+    "name": "约瑟夫",
+    "url": "https://github.com/MaiM-with-u"
+  },
+  "license": "GPL-v3.0-or-later",
+  
+  "host_application": {
+    "min_version": "0.10.0"
+  },
+  "homepage_url": "https://github.com/MaiM-with-u/maibot",
+  "repository_url": "https://github.com/MaiM-with-u/maibot",
+  "keywords": ["diary", "journal", "memory", "qzone", "builtin-api"],
+  "categories": ["Productivity", "Social"],
+  
+  "default_locale": "zh-CN",
+  "locales_path": "_locales",
+  
+  "plugin_info": {
+    "is_built_in": false,
+    "plugin_type": "productivity",
+    "components": [
+      {
+        "type": "action",
+        "name": "diary_generator",
+        "description": "日记生成Action - 使用内置API"
+      },
+      {
+        "type": "command",
+        "name": "diary",
+        "description": "日记管理命令",
+        "pattern": "^/diary\\s+(?P<action>view|list|stats|generate|debug|help)(?:\\s+(?P<param>\\S+))?$"
+      },
+      {
+        "type": "tool",
+        "name": "emotion_analysis",
+        "description": "情感分析工具"
+      }
+    ],
+    "features": [
+      "智能日记生成",
+      "天气情感联动",
+      "QQ空间自动发布",
+      "定时任务调度",
+      "完整对话记录",
+      "跨平台时区支持"
+    ]
+  }
+}

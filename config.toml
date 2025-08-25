@@ -1,0 +1,60 @@
+# diary_plugin - 日记插件配置
+# 让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容
+
+# 插件基础配置
+[plugin]
+# 是否启用插件
+enabled = true
+# 配置文件版本
+config_version = "2.0.0"
+
+# 管理员QQ号列表，用于使用测试命令 (示例:[111,222])
+admin_qqs = []
+
+
+# 日记生成相关配置
+[diary_generation]
+# 消息数量要求配置
+min_message_count = 3        # 生成日记所需的最少消息总数
+min_messages_per_chat = 3    # 每个聊天的最少消息数量才会被处理（单个聊天消息数少于此值时跳过该聊天）
+# 是否启用情感分析
+enable_emotion_analysis = true
+
+
+# QQ空间发布配置
+[qzone_publishing]
+# 设置QQ空间说说字数，范围为20-8000，超过8000则被强制截断，建议保持默认
+qzone_word_count = 300
+
+# Napcat服务地址
+napcat_host = "127.0.0.1"
+# Napcat服务端口
+napcat_port = "9998"
+
+
+[custom_model]
+# 自定义模型（不启用则默认使用系统首要回复模型）
+use_custom_model = false
+
+# 仅支持OpenAI API格式的模型服务，不支持Google Gemini、Anthropic Claude等原生格式
+api_url = "https://api.siliconflow.cn/v1"
+api_key = "sk-your-siliconflow-key-here"
+model_name = "Pro/deepseek-ai/DeepSeek-V3"
+temperature = 0.7
+# 模型上下文长度（单位：k），填写模型的真实上限
+max_context_tokens = 256
+
+# 定时任务配置
+[schedule]
+# 每日生成日记的时间 (HH:MM格式)
+schedule_time = "23:30"
+# 时区设置，支持Windows/Linux/Mac等所有系统,常用时区:Asia/Shanghai (中国标准时间),Asia/Tokyo (日本标准时间),America/New_York (美国东部时间),America/Los_Angeles (美国西部时间),Europe/London (英国时间),UTC (协调世界时)
+timezone = "Asia/Shanghai"
+
+# 过滤模式，可选值：whitelist(白名单), blacklist(黑名单)
+filter_mode = "whitelist"
+
+# 目标列表，格式：["group:群号", "private:用户qq号"]，示例：["group:123456789", "private:987654321"]
+# 白名单模式：空列表=禁用定时任务，有内容=只处理列表中的聊天
+# 黑名单模式：空列表=处理全部聊天，有内容=处理除列表外的聊天
+target_chats = []

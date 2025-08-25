@@ -16,6 +16,19 @@ pip install -r requirements.txt
 pip install httpx pytz tomlkit openai
 ```
 
+## 配置文件管理
+
+**重要说明**：插件不再自动生成配置文件，请手动管理配置。
+
+### 配置文件丢失
+如果 `config.toml` 文件意外丢失：
+1. 重新将 `config_template.toml` 复制一份重命名为 `config.toml`
+2. 重新配置相关参数
+
+### 文件说明
+- `config.toml`：实际使用的配置文件
+- `config_template.toml`：配置模板文件，包含完整配置和详细说明
+
 ## 使用方法
 
 ### 日记命令

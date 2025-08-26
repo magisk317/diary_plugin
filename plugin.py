@@ -4,6 +4,7 @@ import time
 import json
 import random
 import os
+import re
 from typing import List, Tuple, Type, Dict, Any, Optional
 
 from src.plugin_system import (
@@ -27,17 +28,39 @@ from src.plugin_system.apis import (
 
 logger = get_logger("diary_plugin")
 
+# ===== 常量定义 =====
+class DiaryConstants:
+    """日记插件常量"""
+    MIN_MESSAGE_COUNT = 3
+    TOKEN_LIMIT_50K = 50000
+    TOKEN_LIMIT_126K = 126000
+    MAX_DIARY_LENGTH = 8000
+    DEFAULT_QZONE_WORD_COUNT = 300
+
 def _format_date_str(date_input: Any) -> str:
     """统一的日期格式化函数,确保YYYY-MM-DD格式"""
     if isinstance(date_input, datetime.datetime):
         return date_input.strftime("%Y-%m-%d")
     elif isinstance(date_input, str):
         try:
-            date_obj = datetime.datetime.strptime(date_input, "%Y-%m-%d")
-            return date_obj.strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-    return str(date_input)
+            # 尝试多种日期格式
+            for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"]:
+                try:
+                    date_obj = datetime.datetime.strptime(date_input, fmt)
+                    return date_obj.strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            
+            # 如果已经是正确格式，直接返回
+            if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', date_input):
+                return date_input
+                
+        except Exception as e:
+            logger.warning(f"日期格式化失败: {e}")
+    
+    # 最后的后备方案
+    logger.warning(f"无法格式化日期: {date_input}, 使用今天日期")
+    return datetime.datetime.now().strftime("%Y-%m-%d")
 
 # ===== 虚拟ChatStream类 =====
 
@@ -58,8 +81,22 @@ class DiaryQzoneAPI:
     def __init__(self):
         self.cookies = {}
         self.gtk2 = ''
-        self.uin = int(config_api.get_global_config('bot.qq_account', 0))
-        self.cookie_file = os.path.join(os.path.dirname(__file__), "data", f"qzone_cookies_{self.uin}.json")
+        
+        # 安全的uin获取
+        try:
+            uin = config_api.get_global_config('bot.qq_account', 0)
+            self.uin = int(uin) if uin else 0
+        except (ValueError, TypeError):
+            logger.warning("无法获取有效的QQ账号，使用默认值0")
+            self.uin = 0
+        
+        # 确保uin有效
+        if self.uin <= 0:
+            logger.warning(f"QQ账号无效({self.uin})，cookie功能可能异常")
+        
+        # 使用更安全的文件名
+        safe_uin = max(self.uin, 0)  # 确保非负数
+        self.cookie_file = os.path.join(os.path.dirname(__file__), "data", f"qzone_cookies_{safe_uin}.json")
     
     async def _fetch_cookies_by_napcat(self, host: str, port: str, napcat_token: str = "") -> dict:
         """通过Napcat自动获取cookies"""
@@ -87,7 +124,20 @@ class DiaryQzoneAPI:
                     raise RuntimeError(f"获取cookie失败: {data}")
                 
                 cookie_str = data["data"]["cookies"]
-                cookies = {pair.split("=", 1)[0]: pair.split("=", 1)[1] for pair in cookie_str.split("; ")}
+                
+                # 安全的cookie解析
+                cookies = {}
+                try:
+                    for pair in cookie_str.split("; "):
+                        if "=" in pair:
+                            key, value = pair.split("=", 1)
+                            cookies[key] = value
+                        else:
+                            logger.warning(f"跳过格式错误的cookie: {pair}")
+                except Exception as parse_error:
+                    logger.error(f"Cookie解析失败: {parse_error}")
+                    raise RuntimeError(f"Cookie格式错误: {cookie_str}")
+                
                 return cookies
                 
         except Exception as e:
@@ -277,8 +327,13 @@ class ChatIdResolver:
         except Exception:
             return False
     
-    def resolve_filter_mode(self, filter_mode: str, target_chats: List[str]) -> Tuple[str, List[str]]:
-        """根据过滤模式和目标列表解析处理策略"""
+    def resolve_filter_mode(self, filter_mode: str, target_chats: List[str], _recursion_depth: int = 0) -> Tuple[str, List[str]]:
+        """根据过滤模式和目标列表解析处理策略，防止无限递归"""
+        
+        # 防止无限递归
+        if _recursion_depth > 1:
+            logger.error(f"过滤模式解析递归过深，使用默认处理")
+            return "PROCESS_ALL", []
         
         # 根据过滤模式处理
         if filter_mode == "whitelist":
@@ -299,7 +354,7 @@ class ChatIdResolver:
         
         else:
             logger.warning(f"未知的过滤模式: {filter_mode},使用默认白名单模式")
-            return self.resolve_filter_mode("whitelist", target_chats)
+            return self.resolve_filter_mode("whitelist", target_chats, _recursion_depth + 1)
     
     def _parse_target_config(self, target_chats: List[str]) -> Tuple[List[str], List[str]]:
         """解析target_chats配置为群聊和私聊列表"""
@@ -634,26 +689,6 @@ class DiaryGeneratorAction(BaseAction):
         self.qzone_api = DiaryQzoneAPI()
         self.chat_resolver = ChatIdResolver()
     
-    def get_config(self, key: str, default=None):
-        """配置获取方法 - 直接读取TOML文件"""
-        import tomlkit
-        import os
-        config_path = os.path.join(os.path.dirname(__file__), "config.toml")
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = tomlkit.load(f)
-                keys = key.split(".")
-                current = config_data
-                for k in keys:
-                    if isinstance(current, dict) and k in current:
-                        current = current[k]
-                    else:
-                        return default
-                return current
-        except Exception as e:
-            logger.error(f"无法读取配置文件: {e}")
-            return default
-
     async def get_bot_personality(self) -> Dict[str, str]:
         """实时获取bot人设信息"""
         personality_core = config_api.get_global_config("personality.personality_core", "一个机器人")
@@ -666,7 +701,7 @@ class DiaryGeneratorAction(BaseAction):
             "style": reply_style
         }
 
-    async def get_daily_messages(self, date: str, target_chats: List[str] = None, end_hour: int = None, end_minute: int = None, is_manual: bool = False) -> List[Dict[str, Any]]:
+    async def get_daily_messages(self, date: str, target_chats: List[str] = None, end_hour: int = None, end_minute: int = None) -> List[Dict[str, Any]]:
         """获取指定日期的聊天记录（使用内置API）"""
         try:
             # 计算时间范围
@@ -711,6 +746,7 @@ class DiaryGeneratorAction(BaseAction):
                 
                 if strategy == "DISABLE_SCHEDULER":
                     # 检测到示例配置或白名单空列表的处理
+                    is_manual = self.action_data.get("is_manual", False)
                     if is_manual:
                         # 手动命令:处理所有聊天（用于测试）
                         logger.debug("手动命令检测到禁用配置,处理所有聊天用于测试")
@@ -788,7 +824,7 @@ class DiaryGeneratorAction(BaseAction):
             all_messages.sort(key=lambda x: x.get('time', 0))
             
             # 实现min_messages_per_chat过滤逻辑
-            min_messages_per_chat = self.get_config("diary_generation.min_messages_per_chat", 3)
+            min_messages_per_chat = self.get_config("diary_generation.min_messages_per_chat", DiaryConstants.MIN_MESSAGE_COUNT)
             if min_messages_per_chat > 0:
                 # 按聊天ID分组消息
                 chat_message_counts = {}
@@ -957,7 +993,7 @@ class DiaryGeneratorAction(BaseAction):
         logger.debug(f"时间线截断: {current_tokens}→{self.estimate_token_count(truncated)} tokens")
         return truncated + "\n\n[聊天记录过长,已截断]"
 
-    def smart_truncate(self, text: str, max_length: int = 8000) -> str:
+    def smart_truncate(self, text: str, max_length: int = DiaryConstants.MAX_DIARY_LENGTH) -> str:
         """智能截断文本,保持语句完整性"""
         if len(text) <= max_length:
             return text
@@ -988,7 +1024,7 @@ class DiaryGeneratorAction(BaseAction):
                 model=self.get_config("custom_model.model_name", "Pro/deepseek-ai/DeepSeek-V3"),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.get_config("custom_model.temperature", 0.7),
-                timeout=60
+                timeout=self.get_config("custom_model.api_timeout", 300)
             )
             
             content = completion.choices[0].message.content
@@ -1003,7 +1039,7 @@ class DiaryGeneratorAction(BaseAction):
         """使用默认模型生成日记（带126k截断）"""
         try:
             # 默认模型强制126k截断（128k-2k预留）
-            max_tokens = 126000
+            max_tokens = DiaryConstants.TOKEN_LIMIT_126K
             current_tokens = self.estimate_token_count(timeline)
             
             if current_tokens > max_tokens:
@@ -1074,9 +1110,9 @@ class DiaryGeneratorAction(BaseAction):
             personality = await self.get_bot_personality()
             
             # 2. 获取当天消息（使用内置API）
-            messages = await self.get_daily_messages(date, target_chats, is_manual=True)
+            messages = await self.get_daily_messages(date, target_chats)
             
-            if len(messages) < self.get_config("diary_generation.min_message_count", 3):
+            if len(messages) < self.get_config("diary_generation.min_message_count", DiaryConstants.MIN_MESSAGE_COUNT):
                 return False, f"当天消息数量不足({len(messages)}条),无法生成日记"
             
             # 3. 构建时间线
@@ -1087,7 +1123,7 @@ class DiaryGeneratorAction(BaseAction):
             date_with_weather = self.get_date_with_weather(date, weather)
             
             # 5. 生成prompt
-            target_length = self.get_config("qzone_publishing.qzone_word_count", 150)
+            target_length = self.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
             
             current_time = datetime.datetime.now()
             is_today = current_time.strftime("%Y-%m-%d") == date
@@ -1137,9 +1173,9 @@ class DiaryGeneratorAction(BaseAction):
                 return False, diary_content or "模型生成日记失败"
             
             # 7. 字数控制
-            max_length = self.get_config("qzone_publishing.qzone_word_count", 150)
-            if max_length > 8000:
-                max_length = 8000
+            max_length = self.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
+            if max_length > DiaryConstants.MAX_DIARY_LENGTH:
+                max_length = DiaryConstants.MAX_DIARY_LENGTH
             if len(diary_content) > max_length:
                 diary_content = self.smart_truncate(diary_content, max_length)
             
@@ -1206,75 +1242,204 @@ class DiaryManageCommand(BaseCommand):
     
     command_name = "diary"
     command_description = "日记管理命令集合"
-    command_pattern = r"^/diary\s+(?P<action>view|list|stats|generate|debug|help)(?:\s+(?P<param>\S+))?\s*$"
+    command_pattern = r"^/diary\s+(?P<action>list|generate|help)(?:\s+(?P<param>\S+))?\s*$"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.storage = DiaryStorage()
+    
+    async def _get_next_schedule_time(self) -> str:
+        """计算下次定时任务时间"""
+        try:
+            schedule_time = self.get_config("schedule.schedule_time", "23:30")
+            timezone_str = self.get_config("schedule.timezone", "Asia/Shanghai")
+            
+            try:
+                import pytz
+                tz = pytz.timezone(timezone_str)
+                now = datetime.datetime.now(tz)
+            except ImportError:
+                now = datetime.datetime.now()
+            
+            schedule_hour, schedule_minute = map(int, schedule_time.split(":"))
+            today_schedule = now.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+            
+            if now >= today_schedule:
+                today_schedule += datetime.timedelta(days=1)
+            
+            return today_schedule.strftime('%Y-%m-%d %H:%M')
+        except Exception as e:
+            logger.error(f"计算下次定时任务时间失败: {e}")
+            return "计算失败"
+    
+    async def _get_weekly_stats(self, diaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """计算本周统计数据"""
+        try:
+            now = datetime.datetime.now()
+            # 计算本周开始时间（周一）
+            days_since_monday = now.weekday()
+            week_start = now - datetime.timedelta(days=days_since_monday)
+            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # 计算上周开始时间
+            last_week_start = week_start - datetime.timedelta(days=7)
+            
+            # 过滤本周和上周的日记
+            this_week_diaries = []
+            last_week_diaries = []
+            
+            for diary in diaries:
+                diary_time = datetime.datetime.fromtimestamp(diary.get('generation_time', 0))
+                if diary_time >= week_start:
+                    this_week_diaries.append(diary)
+                elif diary_time >= last_week_start and diary_time < week_start:
+                    last_week_diaries.append(diary)
+            
+            # 计算本周统计
+            this_week_count = len(this_week_diaries)
+            this_week_words = sum(diary.get("word_count", 0) for diary in this_week_diaries)
+            this_week_avg = this_week_words // this_week_count if this_week_count > 0 else 0
+            this_week_success = sum(1 for diary in this_week_diaries if diary.get("is_published_qzone", False))
+            this_week_success_rate = (this_week_success / this_week_count * 100) if this_week_count > 0 else 0
+            
+            # 计算上周统计
+            last_week_count = len(last_week_diaries)
+            last_week_words = sum(diary.get("word_count", 0) for diary in last_week_diaries)
+            last_week_avg = last_week_words // last_week_count if last_week_count > 0 else 0
+            
+            # 计算趋势
+            if last_week_avg > 0:
+                word_diff = this_week_avg - last_week_avg
+                if word_diff > 0:
+                    trend = f"↑ 比上周多{word_diff}字"
+                elif word_diff < 0:
+                    trend = f"↓ 比上周少{abs(word_diff)}字"
+                else:
+                    trend = "→ 与上周持平"
+            else:
+                trend = "📈 本周新数据"
+            
+            return {
+                "total_count": this_week_count,
+                "avg_words": this_week_avg,
+                "success_count": this_week_success,
+                "success_rate": this_week_success_rate,
+                "trend": trend
+            }
+        except Exception as e:
+            logger.error(f"计算本周统计失败: {e}")
+            return {
+                "total_count": 0,
+                "avg_words": 0,
+                "success_count": 0,
+                "success_rate": 0,
+                "trend": "计算失败"
+            }
 
-    async def execute(self) -> Tuple[bool, str, bool]:
+    async def _generate_diary_with_50k_limit(self, diary_action, date: str, messages: List[Dict[str, Any]]) -> Tuple[bool, str]:
+        """使用50k强制截断生成日记"""
+        try:
+            # 1. 获取bot人设
+            personality = await diary_action.get_bot_personality()
+            
+            # 2. 构建时间线
+            timeline = diary_action.build_chat_timeline(messages)
+            
+            # 3. 强制50k截断
+            max_tokens = DiaryConstants.TOKEN_LIMIT_50K
+            current_tokens = diary_action.estimate_token_count(timeline)
+            if current_tokens > max_tokens:
+                timeline = diary_action.truncate_timeline_by_tokens(timeline, max_tokens)
+            
+            # 4. 生成天气信息
+            weather = diary_action.get_weather_by_emotion(messages)
+            date_with_weather = diary_action.get_date_with_weather(date, weather)
+            
+            # 5. 生成prompt
+            target_length = diary_action.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
+            
+            current_time = datetime.datetime.now()
+            is_today = current_time.strftime("%Y-%m-%d") == date
+            time_desc = "到现在为止" if is_today else "这一天"
+            
+            prompt = f"""我是{personality['core']},{personality['side']}
+我平时说话的风格是:{personality['style']}
+
+今天是{date},回顾一下{time_desc}的聊天记录:
+{timeline}
+
+现在我要写一篇{target_length}字左右的日记,记录{time_desc}的感受:
+1. 开头必须是日期和天气:{date_with_weather}
+2. 像睡前随手写的感觉,轻松自然
+3. 回忆{time_desc}的对话,加入我的真实感受
+4. 可以吐槽、感慨,体现我的个性
+5. 如果有有趣的事就重点写,平淡的一天就简单记录
+6. 偶尔加一两句小总结或感想
+7. 不要写成流水账,要有重点和感情色彩
+8. 用第一人称"我"来写
+
+我的日记:"""
+
+            # 6. 根据配置选择模型生成
+            use_custom_model = diary_action.get_config("custom_model.use_custom_model", False)
+            
+            if use_custom_model:
+                success, diary_content = await diary_action.generate_with_custom_model(prompt)
+            else:
+                success, diary_content = await diary_action.generate_with_default_model(prompt, timeline)
+            
+            if not success or not diary_content:
+                return False, diary_content or "模型生成日记失败"
+            
+            # 7. 字数控制
+            max_length = diary_action.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
+            if max_length > DiaryConstants.MAX_DIARY_LENGTH:
+                max_length = DiaryConstants.MAX_DIARY_LENGTH
+            if len(diary_content) > max_length:
+                diary_content = diary_action.smart_truncate(diary_content, max_length)
+            
+            # 8. 保存到JSON文件
+            diary_record = {
+                "date": date,
+                "diary_content": diary_content,
+                "word_count": len(diary_content),
+                "generation_time": time.time(),
+                "weather": weather,
+                "bot_messages": getattr(diary_action, '_timeline_stats', {}).get('bot_messages', 0),
+                "user_messages": getattr(diary_action, '_timeline_stats', {}).get('user_messages', 0),
+                "is_published_qzone": False,
+                "qzone_publish_time": None,
+                "status": "生成成功",
+                "error_message": ""
+            }
+            
+            await diary_action.storage.save_diary(diary_record)
+            return True, diary_content
+            
+        except Exception as e:
+            logger.error(f"生成日记失败: {e}")
+            return False, f"生成日记时出错: {str(e)}"
+
+    async def execute(self) -> Tuple[bool, Optional[str], bool]:
         """执行日记管理命令"""
         action = self.matched_groups.get("action")
         param = self.matched_groups.get("param")
         
+        
+        
         try:
             # 获取管理员QQ列表
-            import tomlkit
-            import os
-            config_path = os.path.join(os.path.dirname(__file__), "config.toml")
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config_data = tomlkit.load(f)
-                    admin_qqs = config_data.get("plugin", {}).get("admin_qqs", [])
-            except Exception as e:
-                logger.error(f"无法读取配置文件: {e}")
-                admin_qqs = []
+            admin_qqs = [str(admin_id) for admin_id in self.get_config("plugin.admin_qqs", [])]
             
             # 获取用户ID
-            current_qq = None
-            try:
-                current_qq = str(self.message.message_info.user_info.user_id)
-            except AttributeError:
-                try:
-                    current_qq = str(self.message.user_info.user_id)
-                except AttributeError:
-                    try:
-                        current_qq = str(self.message.user_id)
-                    except AttributeError:
-                        logger.error("无法获取用户ID,权限检查失败")
-                        await self.send_text("❌ 系统错误:无法验证用户身份")
-                        return False, "用户ID获取失败", True
+            user_id = str(self.message.message_info.user_info.user_id)
             
-            # 权限检查 - 支持数字和字符串格式
-            has_permission = False
-            if admin_qqs:  # 空列表=无人有权限
-                for admin_qq in admin_qqs:
-                    try:
-                        if str(admin_qq) == current_qq or int(current_qq) == int(admin_qq):
-                            has_permission = True
-                            break
-                    except (ValueError, TypeError):
-                        # 如果类型转换失败,只进行字符串比较
-                        if str(admin_qq) == current_qq:
-                            has_permission = True
-                            break
-                    except:
-                        continue
-                
-                # 权限检查已完成,无需额外处理
+            # 权限检查
+            has_permission = user_id in admin_qqs
             
             if not has_permission:
-                # 简单检测是否为群聊
-                is_group_chat = False
-                try:
-                    if hasattr(self.message, 'chat_stream') and hasattr(self.message.chat_stream, 'group_info'):
-                        is_group_chat = self.message.chat_stream.group_info is not None
-                    elif hasattr(self.message, 'message_info') and hasattr(self.message.message_info, 'group_info'):
-                        is_group_chat = self.message.message_info.group_info is not None
-                    elif hasattr(self.message, 'group_info'):
-                        is_group_chat = self.message.group_info is not None
-                except:
-                    is_group_chat = False
+                # 检测是否为群聊
+                is_group_chat = self.message.message_info.group_info is not None
                 
                 if is_group_chat:
                     # 群聊内:静默处理,阻止后续处理
@@ -1285,113 +1450,12 @@ class DiaryManageCommand(BaseCommand):
                     return False, "无权限", True
 
             if action == "generate":
-                # 生成日记
+                # 生成日记（忽略黑白名单，50k强制截断）
                 date = _format_date_str(param if param else datetime.datetime.now())
-                
-                diary_action = DiaryGeneratorAction(
-                    action_data={"date": date, "target_chats": []},
-                    reasoning="手动生成日记",
-                    cycle_timers={},
-                    thinking_id="manual_diary",
-                    chat_stream=self.message.chat_stream,
-                    log_prefix="[DiaryManage]",
-                    action_message=None
-                )
-                
-                # 预检查消息数量（使用与实际生成相同的逻辑）
-                messages = await diary_action.get_daily_messages(date, is_manual=True)
-                min_message_count = diary_action.get_config("diary_generation.min_message_count", 3)
-                min_messages_per_chat = diary_action.get_config("diary_generation.min_messages_per_chat", 3)
-                
-                if len(messages) < min_message_count:
-                    await self.send_text(f"❌ {date} 消息数量不足({len(messages)}条),无法生成日记\n💡 提示:当前配置要求总消息数≥{min_message_count},每个聊天消息数≥{min_messages_per_chat}")
-                    return False, "消息数量不足", True
                 
                 await self.send_text(f"🔄 正在生成 {date} 的日记...")
                 
-                success, result = await diary_action.generate_diary(date)
-                
-                if success:
-                    await self.send_text(f"✅ 日记生成成功！\n\n📖 {date}:\n{result}")
-                    
-                    await self.send_text("📱 正在发布到QQ空间...")
-                    qzone_success = await diary_action._publish_to_qzone(result, date)
-                    
-                    if qzone_success:
-                        await self.send_text("🎉 已成功发布到QQ空间！")
-                    else:
-                        await self.send_text("⚠️ QQ空间发布失败,可能原因:\n1. Napcat服务未启动\n2. 端口配置错误\n3. QQ空间权限问题")
-                else:
-                    await self.send_text(f"❌ 生成失败:{result}")
-                return success, result, True
-                
-            elif action == "view":
-                date = _format_date_str(param if param else datetime.datetime.now())
-                
-                # 获取指定日期的所有日记
-                date_diaries = await self.storage.get_diaries_by_date(date)
-                
-                if date_diaries:
-                    if len(date_diaries) == 1:
-                        # 只有一条日记,直接显示
-                        diary = date_diaries[0]
-                        content = diary.get("diary_content", "")
-                        word_count = diary.get("word_count", 0)
-                        gen_time = datetime.datetime.fromtimestamp(diary.get("generation_time", 0))
-                        await self.send_text(f"📖 {date} 的日记:\n\n{content}\n\n📊 字数:{word_count} | 生成时间:{gen_time.strftime('%H:%M')}")
-                    else:
-                        # 多条日记,合并显示
-                        diary_list = []
-                        for i, diary in enumerate(date_diaries, 1):
-                            gen_time = datetime.datetime.fromtimestamp(diary.get("generation_time", 0))
-                            word_count = diary.get("word_count", 0)
-                            diary_list.append(f"{i}. {gen_time.strftime('%H:%M')} ({word_count}字)")
-                        # 显示最新的日记内容
-                        latest_diary = date_diaries[-1]  # 已按时间排序,最后一个是最新的
-                        content = latest_diary.get("diary_content", "")
-                        word_count = latest_diary.get("word_count", 0)
-                        gen_time = datetime.datetime.fromtimestamp(latest_diary.get("generation_time", 0))
-                        # 合并为一次回复
-                        combined_text = f"📖 {date} 共有 {len(date_diaries)} 条日记:\n\n" + "\n".join(diary_list) + f"\n\n💡 最新的一条:\n\n{content}\n\n📊 字数:{word_count} | 生成时间:{gen_time.strftime('%H:%M')}"
-                        await self.send_text(combined_text)
-                else:
-                    await self.send_text(f"📭 没有找到 {date} 的日记")
-                
-                return True, "查看日记完成", True
-                
-            elif action == "list":
-                diaries = await self.storage.list_diaries(limit=10)
-                
-                if diaries:
-                    diary_list = []
-                    for diary in diaries:
-                        date = diary.get("date", "")
-                        word_count = diary.get("word_count", 0)
-                        diary_list.append(f"📅 {date} ({word_count}字)")
-                    
-                    await self.send_text(f"📚 最近的日记:\n\n" + "\n".join(diary_list))
-                else:
-                    await self.send_text("📭 还没有任何日记记录")
-                
-                return True, "列出日记完成", True
-                
-            elif action == "stats":
-                stats = await self.storage.get_stats()
-                
-                stats_text = f"""📊 日记统计:
-
-📖 总日记数:{stats['total_count']}篇
-📝 总字数:{stats['total_words']} 字
-📏 平均字数:{stats['avg_words']} 字/篇
-📅 最新日记:{stats['latest_date']}"""
-                
-                await self.send_text(stats_text)
-                return True, "统计信息完成", True
-                
-            elif action == "debug":
-                date = _format_date_str(param if param else datetime.datetime.now())
-                
-                # 测试内置API和过滤逻辑
+                # 直接获取所有消息，忽略黑白名单配置
                 try:
                     date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
                     start_time = date_obj.timestamp()
@@ -1401,98 +1465,201 @@ class DiaryManageCommand(BaseCommand):
                     else:
                         end_time = (date_obj + datetime.timedelta(days=1)).timestamp()
                     
-                    # 测试不同的filter_mai设置
-                    messages_with_bot = message_api.get_messages_by_time(start_time, end_time, filter_mai=False)
-                    messages_without_bot = message_api.get_messages_by_time(start_time, end_time, filter_mai=True)
+                    # 获取所有消息，不受黑白名单限制
+                    messages = message_api.get_messages_by_time(
+                        start_time=start_time,
+                        end_time=end_time,
+                        limit=0,
+                        filter_mai=False
+                    )
                     
-                    bot_qq = str(config_api.get_global_config("bot.qq_account", ""))
+                    min_message_count = DiaryConstants.MIN_MESSAGE_COUNT  # 硬编码最少消息数
+                    if len(messages) < min_message_count:
+                        await self.send_text(f"❌ {date} 消息数量不足({len(messages)}条),无法生成日记")
+                        return False, "消息数量不足", True
                     
-                    # 创建临时DiaryGeneratorAction来测试过滤逻辑
+                    # 创建日记生成器
                     diary_action = DiaryGeneratorAction(
-                        action_data={"date": date, "target_chats": []},
-                        reasoning="调试测试",
+                        action_data={"date": date, "target_chats": [], "is_manual": True},
+                        reasoning="手动生成日记",
                         cycle_timers={},
-                        thinking_id="debug_test",
+                        thinking_id="manual_diary",
                         chat_stream=self.message.chat_stream,
-                        log_prefix="[Debug]",
+                        log_prefix="[DiaryManage]",
+                        plugin_config=self.plugin_config,
                         action_message=None
                     )
                     
-                    # 获取经过min_messages_per_chat过滤的消息
-                    filtered_messages = await diary_action.get_daily_messages(date, is_manual=True)
-                    min_message_count = diary_action.get_config("diary_generation.min_message_count", 3)
-                    min_messages_per_chat = diary_action.get_config("diary_generation.min_messages_per_chat", 3)
+                    # 使用50k强制截断生成日记
+                    success, result = await self._generate_diary_with_50k_limit(diary_action, date, messages)
                     
-                    # 分析聊天分布
-                    chat_distribution = {}
-                    for msg in messages_with_bot:
-                        chat_id = msg.get('chat_id', '')
-                        if chat_id not in chat_distribution:
-                            chat_distribution[chat_id] = 0
-                        chat_distribution[chat_id] += 1
-                    
-                    # 计算过滤统计
-                    kept_chats = sum(1 for count in chat_distribution.values() if count >= min_messages_per_chat)
-                    filtered_chats = len(chat_distribution) - kept_chats
-                    
-                    debug_text = f"""🔍 日记调试 ({date}):
-
-🤖 Bot信息:
-- QQ号: {bot_qq}
-- 昵称: {config_api.get_global_config("bot.nickname", "麦麦")}
-
-📊 内置API测试:
-- 完整消息（包含Bot）: {len(messages_with_bot)}条
-- 用户消息（过滤Bot）: {len(messages_without_bot)}条
-- Bot消息数量: {len(messages_with_bot) - len(messages_without_bot)}条
-
-🔧 过滤配置测试:
-- 最少总消息数: {min_message_count}条
-- 每聊天最少消息数: {min_messages_per_chat}条
-- 过滤后可用消息: {len(filtered_messages)}条
-- 是否满足生成条件: {'✅ 是' if len(filtered_messages) >= min_message_count else '❌ 否'}
-
-📈 聊天分布分析:
-- 总聊天数: {len(chat_distribution)}个
-- 保留聊天数: {kept_chats}个 (消息数≥{min_messages_per_chat})
-- 过滤聊天数: {filtered_chats}个 (消息数<{min_messages_per_chat})"""
-                    
-                    # 显示具体的聊天分布（最多显示10个）
-                    if chat_distribution:
-                        debug_text += "\n\n📋 聊天消息分布（前10个）:"
-                        sorted_chats = sorted(chat_distribution.items(), key=lambda x: x[1], reverse=True)
-                        for i, (chat_id, count) in enumerate(sorted_chats[:10]):
-                            status = "✅保留" if count >= min_messages_per_chat else "❌过滤"
-                            debug_text += f"\n{i+1}. {chat_id[:20]}... : {count}条 {status}"
-                    
-                    debug_text += "\n\n💬 消息示例（前5条）:"
-
-                    for i, msg in enumerate(messages_with_bot[:5]):
-                        user_id = str(msg.get('user_id', ''))
-                        nickname = msg.get('user_nickname', '')
-                        content = msg.get('processed_plain_text', '')[:30]
-                        msg_type = "Bot" if user_id == bot_qq else "User"
-                        debug_text += f"\n{i+1}. [{msg_type}] {nickname}: {content}..."
-                    
-                    await self.send_text(debug_text)
+                    if success:
+                        await self.send_text(f"✅ 日记生成成功！\n\n📖 {date}:\n{result}")
+                        
+                        await self.send_text("📱 正在发布到QQ空间...")
+                        qzone_success = await diary_action._publish_to_qzone(result, date)
+                        
+                        if qzone_success:
+                            await self.send_text("🎉 已成功发布到QQ空间！")
+                        else:
+                            await self.send_text("⚠️ QQ空间发布失败,可能原因:\n1. Napcat服务未启动\n2. 端口配置错误\n3. QQ空间权限问题")
+                    else:
+                        await self.send_text(f"❌ 生成失败:{result}")
+                    return success, result, True
                     
                 except Exception as e:
-                    await self.send_text(f"❌ 调试失败:{str(e)}")
+                    await self.send_text(f"❌ 生成日记时出错:{str(e)}")
+                    return False, f"生成出错: {str(e)}", True
                 
-                return True, "调试信息完成", True
+            elif action == "list":
+                param = self.matched_groups.get("param")
+                
+                if param == "all":
+                    # 显示详细统计和趋势分析
+                    stats = await self.storage.get_stats()
+                    diaries = await self.storage.list_diaries(limit=0)
+                    
+                    if diaries:
+                        # 计算发布统计
+                        success_count = sum(1 for diary in diaries if diary.get("is_published_qzone", False))
+                        failed_count = len(diaries) - success_count
+                        success_rate = (success_count / len(diaries) * 100) if diaries else 0
+                        
+                        # 计算日期范围
+                        dates = [diary.get("date", "") for diary in diaries if diary.get("date")]
+                        dates.sort()
+                        date_range = f"{dates[0]} ~ {dates[-1]}" if len(dates) > 1 else dates[0] if dates else "无"
+                        
+                        # 计算最长最短日记
+                        max_diary = max(diaries, key=lambda x: x.get('word_count', 0))
+                        min_diary = min(diaries, key=lambda x: x.get('word_count', 0))
+                        
+                        latest_time = datetime.datetime.fromtimestamp(max(diaries, key=lambda x: x.get('generation_time', 0)).get('generation_time', 0))
+                        
+                        # 计算下次定时任务时间
+                        next_schedule = await self._get_next_schedule_time()
+                        
+                        # 计算本周统计
+                        weekly_stats = await self._get_weekly_stats(diaries)
+                        
+                        stats_text = f"""📚 日记概览:
+
+📊 详细统计:
+📖 总日记数: {stats['total_count']}篇
+📝 总字数: {stats['total_words']}字 (平均: {stats['avg_words']}字/篇)
+📅 日期范围: {date_range} ({len(set(dates))}天)
+📱 发布统计: {success_count}篇成功, {failed_count}篇失败 (成功率: {success_rate:.1f}%)
+🕐 最近生成: {latest_time.strftime('%Y-%m-%d %H:%M')}
+⏰ 下次定时: {next_schedule}
+
+📈 趋势分析:
+📝 本周平均: {weekly_stats['avg_words']}字/篇 ({weekly_stats['trend']})
+📱 本周发布: {weekly_stats['success_count']}/{weekly_stats['total_count']}篇成功 ({weekly_stats['success_rate']:.0f}%)
+🔥 最长日记: {max_diary.get('date', '无')} ({max_diary.get('word_count', 0)}字)
+📏 最短日记: {min_diary.get('date', '无')} ({min_diary.get('word_count', 0)}字)"""
+                        await self.send_text(stats_text)
+                    else:
+                        await self.send_text("📭 还没有任何日记记录")
+                    
+                    return True, "详细统计完成", True
+                    
+                elif param and re.match(r'\d{4}-\d{1,2}-\d{1,2}', param):
+                    # 显示指定日期的日记概况
+                    date = _format_date_str(param)
+                    date_diaries = await self.storage.get_diaries_by_date(date)
+                    
+                    if date_diaries:
+                        # 计算当天统计
+                        total_words = sum(diary.get("word_count", 0) for diary in date_diaries)
+                        avg_words = total_words // len(date_diaries) if date_diaries else 0
+                        success_count = sum(1 for diary in date_diaries if diary.get("is_published_qzone", False))
+                        failed_count = len(date_diaries) - success_count
+                        success_rate = (success_count / len(date_diaries) * 100) if date_diaries else 0
+                        
+                        # 生成时间信息
+                        times = [datetime.datetime.fromtimestamp(diary.get("generation_time", 0)) for diary in date_diaries]
+                        earliest_time = min(times).strftime('%H:%M')
+                        latest_time = max(times).strftime('%H:%M')
+                        
+                        # 构建日记列表
+                        diary_list = []
+                        for i, diary in enumerate(date_diaries, 1):
+                            gen_time = datetime.datetime.fromtimestamp(diary.get("generation_time", 0))
+                            word_count = diary.get("word_count", 0)
+                            status = "✅已发布" if diary.get("is_published_qzone", False) else "❌发布失败"
+                            diary_list.append(f"{i}. {gen_time.strftime('%H:%M')} ({word_count}字) {status}")
+                        
+                        date_text = f"""📅 {date} 日记概况:
+
+📝 当天日记: 共{len(date_diaries)}篇
+{chr(10).join(diary_list)}
+
+📊 当天统计:
+📝 总字数: {total_words}字(平均: {avg_words}字/篇)
+📱 发布状态: {success_count}篇成功, {failed_count}篇失败 (成功率: {success_rate:.1f}%)
+🕐 最新生成: {latest_time}
+⏰ 最早生成: {earliest_time}
+
+💡 查看具体内容:
+🌐 QQ空间: 查看已发布的日记内容
+📁 本地文件: plugins/diary_plugin/data/diaries/{date}_*.json"""
+                        await self.send_text(date_text)
+                    else:
+                        await self.send_text(f"📭 没有找到 {date} 的日记")
+                    return True, "指定日期概况完成", True
+                    
+                else:
+                    # 显示基础概览（统计 + 最近10篇）
+                    stats = await self.storage.get_stats()
+                    diaries = await self.storage.list_diaries(limit=10)
+                    
+                    if diaries:
+                        # 构建日记列表
+                        diary_list = []
+                        for diary in diaries:
+                            date = diary.get("date", "")
+                            word_count = diary.get("word_count", 0)
+                            status = "✅已发布" if diary.get("is_published_qzone", False) else "❌发布失败"
+                            diary_list.append(f"📅 {date} ({word_count}字) {status}")
+                        
+                        overview_text = f"""📚 日记概览:
+
+📊 统计信息:
+📖 总日记数: {stats['total_count']}篇
+📝 总字数: {stats['total_words']}字
+📏 平均字数: {stats['avg_words']}字/篇
+📅 最新日记: {stats['latest_date']}
+
+📋 最近日记 (10篇):
+{chr(10).join(diary_list)}
+
+💡 提示: 使用 /diary list [日期] 查看指定日期概况"""
+                        
+                        await self.send_text(overview_text)
+                    else:
+                        await self.send_text("📭 还没有任何日记记录")
+                    
+                    return True, "日记概览完成", True
+                
+                
                 
             elif action == "help":
                 help_text = """📖 日记插件帮助
 
 🔧 可用命令:
 /diary generate [日期] - 生成指定日期的日记（默认今天）
-/diary view [日期] - 查看指定日期的日记（默认今天）
-/diary list - 列出最近10篇日记
-/diary stats - 显示日记统计信息
-/diary debug [日期] - 调试内置API消息读取（默认今天）
+
+/diary list - 显示基础概览（统计 + 最近10篇）
+/diary list [日期] - 显示指定日期的日记概况
+/diary list all - 显示详细统计和趋势分析
+
 /diary help - 显示此帮助信息
 
-📅 日期格式:YYYY-MM-DD 或 YYYY-M-D（如:2025-08-24 或 2025-8-24）"""
+📅 日期格式: YYYY-MM-DD 或 YYYY-M-D（如: 2025-08-24 或 2025-8-24）
+
+💡 查看日记内容:
+🌐 QQ空间: 查看已发布的日记
+📁 本地文件: plugins/diary_plugin/data/diaries/"""
                 await self.send_text(help_text)
                 return True, "帮助信息完成", True
                 
@@ -1500,18 +1667,6 @@ class DiaryManageCommand(BaseCommand):
                 await self.send_text("❓ 未知的日记命令。使用 /diary help 查看可用命令。")
                 return False, "未知命令", True
                 
-        except ImportError as e:
-            logger.error(f"导入模块失败: {e}")
-            await self.send_text("❌ 系统错误:缺少必要的依赖模块")
-            return False, f"导入错误: {str(e)}", True
-        except AttributeError as e:
-            logger.error(f"属性访问错误: {e}")
-            await self.send_text("❌ 系统错误:消息格式不兼容")
-            return False, f"属性错误: {str(e)}", True
-        except KeyError as e:
-            logger.error(f"配置键缺失: {e}")
-            await self.send_text("❌ 配置错误:缺少必要的配置项")
-            return False, f"配置错误: {str(e)}", True
         except Exception as e:
             logger.error(f"日记管理命令出错: {e}")
             await self.send_text(f"❌ 命令执行出错:{str(e)}")
@@ -1610,12 +1765,13 @@ class DiaryScheduler:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             
             diary_action = DiaryGeneratorAction(
-                action_data={"date": today, "target_chats": []},
+                action_data={"date": today, "target_chats": [], "is_manual": False},
                 reasoning="定时生成日记",
                 cycle_timers={},
                 thinking_id="scheduled_diary",
                 chat_stream=MockChatStream(),
                 log_prefix="[ScheduledDiary]",
+                plugin_config=self.plugin.config,  # 传递完整配置
                 action_message=None
             )
             
@@ -1643,7 +1799,7 @@ class DiaryPlugin(BasePlugin):
     plugin_name = "diary_plugin"
     enable_plugin = True
     dependencies = []
-    python_dependencies = ["httpx", "pytz", "tomlkit", "openai"]
+    python_dependencies = ["httpx", "pytz", "openai"]
     config_file_name = "config.toml"
     
     config_section_descriptions = {
@@ -1657,37 +1813,38 @@ class DiaryPlugin(BasePlugin):
     config_schema = {
         "plugin": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
-            "config_version": ConfigField(type=str, default="2.0.0", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="2.0.0", description="配置版本"),
             "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ号列表")
         },
         "diary_generation": {
-            "min_message_count": ConfigField(type=int, default=3, description="生成日记所需的最少消息总数"),
-            "min_messages_per_chat": ConfigField(type=int, default=3, description="每个聊天的最少消息数量"),
-            "enable_emotion_analysis": ConfigField(type=bool, default=True, description="是否启用情感分析")
+            "min_message_count": ConfigField(type=int, default=3, description="最少消息总数"),
+            "min_messages_per_chat": ConfigField(type=int, default=3, description="每聊天最少消息数"),
+            "enable_emotion_analysis": ConfigField(type=bool, default=True, description="启用情感分析")
         },
         "qzone_publishing": {
-            "qzone_word_count": ConfigField(type=int, default=300, description="QQ空间说说字数"),
-            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat服务地址"),
-            "napcat_port": ConfigField(type=str, default="9998", description="Napcat服务端口")
+            "qzone_word_count": ConfigField(type=int, default=300, description="QQ空间字数"),
+            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat地址"),
+            "napcat_port": ConfigField(type=str, default="9998", description="Napcat端口")
         },
         "custom_model": {
-            "use_custom_model": ConfigField(type=bool, default=False, description="是否使用自定义模型"),
-            "api_url": ConfigField(type=str, default="https://api.siliconflow.cn/v1", description="API服务地址"),
+            "use_custom_model": ConfigField(type=bool, default=False, description="使用自定义模型"),
+            "api_url": ConfigField(type=str, default="https://api.siliconflow.cn/v1", description="API地址"),
             "api_key": ConfigField(type=str, default="sk-your-siliconflow-key-here", description="API密钥"),
             "model_name": ConfigField(type=str, default="Pro/deepseek-ai/DeepSeek-V3", description="模型名称"),
             "temperature": ConfigField(type=float, default=0.7, description="生成温度"),
-            "max_context_tokens": ConfigField(type=int, default=256, description="模型上下文长度")
+            "max_context_tokens": ConfigField(type=int, default=256, description="上下文长度"),
+            "api_timeout": ConfigField(type=int, default=300, description="API超时时间")
         },
         "schedule": {
-            "schedule_time": ConfigField(type=str, default="23:30", description="每日生成日记的时间"),
-            "timezone": ConfigField(type=str, default="Asia/Shanghai", description="时区设置"),
+            "schedule_time": ConfigField(type=str, default="23:30", description="定时时间"),
+            "timezone": ConfigField(type=str, default="Asia/Shanghai", description="时区"),
             "filter_mode": ConfigField(type=str, default="whitelist", description="过滤模式"),
             "target_chats": ConfigField(type=list, default=[], description="目标聊天列表")
         }
     }
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, plugin_dir: str, **kwargs):
+        super().__init__(plugin_dir, **kwargs)
         self.scheduler = None
         self.logger = get_logger("DiaryPlugin")
         self.storage = DiaryStorage()
@@ -1703,7 +1860,7 @@ class DiaryPlugin(BasePlugin):
         """显示插件配置状态（info级别）"""
         try:
             # 读取基本配置
-            admin_qqs = self.get_config("plugin.admin_qqs", [])
+            admin_qqs = [str(admin_id) for admin_id in self.get_config("plugin.admin_qqs", [])]
             filter_mode = self.get_config("schedule.filter_mode", "whitelist")
             target_chats = self.get_config("schedule.target_chats", [])
             use_custom_model = self.get_config("custom_model.use_custom_model", False)
@@ -1740,25 +1897,6 @@ class DiaryPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"读取插件配置失败: {e}")
     
-    def get_config(self, key: str, default=None):
-        """配置获取方法 - 直接读取TOML文件"""
-        import tomlkit
-        import os
-        config_path = os.path.join(os.path.dirname(__file__), "config.toml")
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = tomlkit.load(f)
-                keys = key.split(".")
-                current = config_data
-                for k in keys:
-                    if isinstance(current, dict) and k in current:
-                        current = current[k]
-                    else:
-                        return default
-                return current
-        except Exception as e:
-            self.logger.error(f"无法读取配置文件: {e}")
-            return default
 
     async def _start_scheduler_after_delay(self):
         """延迟启动定时任务"""

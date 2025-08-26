@@ -39,6 +39,8 @@ api_key = "sk-your-siliconflow-key-here"
 model_name = "Pro/deepseek-ai/DeepSeek-V3"
 temperature = 0.7
 # 模型上下文长度（单位：k）,填写模型的真实上限
+# API调用超时时间（秒），大量聊天记录时建议设置更长时间
+api_timeout = 300
 max_context_tokens = 256
 
 # 定时任务配置

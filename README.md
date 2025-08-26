@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 或手动安装：
 ```bash
-pip install httpx pytz tomlkit openai
+pip install httpx pytz openai
 ```
 
 ## 配置文件管理
@@ -44,32 +44,21 @@ pip install httpx pytz tomlkit openai
 /diary generate              # 生成今天的日记并发布到QQ空间
 /diary generate 2025-08-24   # 生成指定日期的日记并发布
 
-# 查看日记
-/diary view                  # 查看今天的日记
-/diary view 2025-08-24       # 查看指定日期的日记
-
-# 日记列表
-/diary list                  # 列出最近10篇日记
-
-# 统计信息
-/diary stats                 # 查看日记统计数据
-
-# 调试功能
-/diary debug                 # 调试今天的消息过滤和配置
-/diary debug 2025-08-24      # 调试指定日期的消息过滤
+# 日记概览
+/diary list                  # 显示日记概览（统计 + 最近10篇）
+/diary list 2025-08-24       # 显示指定日期的日记概况
+/diary list all              # 显示详细统计和趋势分析
 
 # 帮助信息
 /diary help                  # 显示所有可用命令
 ```
 
-### Command指令行为说明
+### Command指令说明
 
-**白名单模式下的特殊影响**：
-
-- **空列表时** (`target_chats = []`)：定时任务被禁用，使用指令将处理所有活跃聊天
-- **设置了目标列表**：定时任务和手动命令都只处理指定聊天
-
-**黑名单模式无特殊影响**：空列表和指定聊天的行为都很直观
+**generate命令特点**：
+- 忽略黑白名单配置，始终处理所有活跃聊天
+- 使用50k token强制截断保护，确保生成稳定
+- 主要用于验证整体流程和测试功能
 
 ## 配置说明
 
@@ -132,6 +121,7 @@ api_key = "sk-your-siliconflow-key-here"
 model_name = "Pro/deepseek-ai/DeepSeek-V3"
 temperature = 0.7
 max_context_tokens = 256
+api_timeout = 300
 ```
 
 - `use_custom_model`：是否使用自定义模型，false时使用系统默认的首要回复模型
@@ -140,6 +130,7 @@ max_context_tokens = 256
 - `model_name`：模型名称
 - `temperature`：生成温度，范围0.0-1.0，推荐0.7
 - `max_context_tokens`：模型上下文长度（单位：k），填写模型真实上限
+- `api_timeout`：API调用超时时间（秒），大量聊天记录时建议设置更长时间，默认300秒
 
 **API URL 格式说明**：
 ```toml
@@ -203,18 +194,27 @@ target_chats = ["group:999999"]
 - 使用用户指定的自定义模型
 - 根据max_context_tokens配置截断（自动减去2k预留给提示词）
 - 支持更长上下文，可选择更强大的模型
+- 可配置API超时时间，适合处理大量聊天记录
 
-## 调试功能
+## 大量聊天记录处理
 
-使用 `/diary debug` 命令可以查看：
-- Bot基本信息（QQ号、昵称）
-- 消息统计（完整消息、用户消息、Bot消息数量）
-- 过滤配置效果（min_message_count、min_messages_per_chat）
-- 过滤后可用消息数量
-- 是否满足日记生成条件
-- 消息示例（前5条）
+### 超时问题解决
+当聊天记录特别多（256k-1M token）时，可能会遇到API超时问题：
 
-这有助于理解配置对消息处理的影响，排查日记生成问题。
+**推荐解决方案**：
+1. **启用自定义模型**：设置 `use_custom_model = true`
+2. **调整超时时间**：设置 `api_timeout = 600`（10分钟）
+3. **适当截断**：降低 `max_context_tokens` 值
+
+**配置示例**：
+```toml
+[custom_model]
+use_custom_model = true
+api_timeout = 600  # 10分钟超时，适合大量数据
+max_context_tokens = 128  # 适当减少上下文长度
+```
+
+
 
 ## 日志说明
 
@@ -244,7 +244,7 @@ target_chats = ["group:999999"]
 A: 确保QQ号已添加到admin_qqs配置中
 
 **Q: 日记生成失败，提示"消息数量不足"**
-A: 检查min_message_count和min_messages_per_chat配置，或当天确实聊天较少。使用`/diary debug`查看详细过滤情况
+A: 检查min_message_count和min_messages_per_chat配置，或当天确实聊天较少
 
 **Q: QQ空间发布失败**
 A: 检查Napcat服务是否运行，端口配置是否正确
@@ -257,3 +257,10 @@ A: 检查API地址、密钥和模型名称是否正确，确认服务商支持Op
 
 **Q: 定时任务没有执行**
 A: 检查filter_mode和target_chats配置，白名单空列表会禁用定时任务
+
+**Q: API调用超时，提示"超时错误"**
+A: 聊天记录过多导致处理时间过长，建议：
+1. 启用自定义模型：`use_custom_model = true`
+2. 增加超时时间：`api_timeout = 600`
+3. 减少上下文长度：`max_context_tokens = 128`
+4. 或调整MaiBot全局超时：config/model_config.toml中timeout改为180

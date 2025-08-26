@@ -14,6 +14,8 @@
 
 在使用插件前，请先安装必要的依赖：
 
+- 注意，要在麦麦主程序的虚拟环境下执行
+
 ```bash
 cd plugins/diary_plugin
 pip install -r requirements.txt
@@ -201,24 +203,6 @@ target_chats = ["group:999999"]
 - 根据max_context_tokens配置截断（自动减去2k预留给提示词）
 - 支持更长上下文，可选择更强大的模型
 - 可配置API超时时间，适合处理大量聊天记录
-
-## 大量聊天记录处理
-
-### 超时问题解决
-当聊天记录特别多（256k-1M token）时，可能会遇到API超时问题：
-
-**推荐解决方案**：
-1. **启用自定义模型**：设置 `use_custom_model = true`
-2. **调整超时时间**：设置 `api_timeout = 600`（10分钟）
-3. **适当截断**：降低 `max_context_tokens` 值
-
-**配置示例**：
-```toml
-[custom_model]
-use_custom_model = true
-api_timeout = 600  # 10分钟超时，适合大量数据
-max_context_tokens = 128  # 适当减少上下文长度
-```
 
 
 

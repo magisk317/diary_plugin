@@ -260,7 +260,7 @@ A: 上下文长度超限，请降低max_context_tokens配置值
 
 A: 检查API地址、密钥和模型名称是否正确，确认服务商支持OpenAI格式，确保api_url使用基础URL格式
 
-**Q: 定时任务没有执行
+**Q: 定时任务没有执行**
 
 A: 检查filter_mode和target_chats配置，白名单空列表会禁用定时任务
 

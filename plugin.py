@@ -701,7 +701,7 @@ class DiaryGeneratorAction(BaseAction):
             "style": reply_style
         }
 
-    async def get_daily_messages(self, date: str, target_chats: List[str] = None, end_hour: int = None, end_minute: int = None) -> List[Dict[str, Any]]:
+    async def get_daily_messages(self, date: str, target_chats: List[str] = None, end_hour: int = None, end_minute: int = None) -> List[Any]:
         """获取指定日期的聊天记录（使用内置API）"""
         try:
             # 计算时间范围
@@ -811,7 +811,7 @@ class DiaryGeneratorAction(BaseAction):
                         # 过滤掉黑名单中的聊天
                         excluded_chat_ids = set(resolved_chat_ids)
                         for msg in all_chat_messages:
-                            msg_chat_id = msg.get('chat_id', '')
+                            msg_chat_id = msg.chat_id
                             if msg_chat_id not in excluded_chat_ids:
                                 all_messages.append(msg)
                         
@@ -821,7 +821,7 @@ class DiaryGeneratorAction(BaseAction):
                         logger.error(f"获取所有消息失败: {e}")
             
             # 按时间排序
-            all_messages.sort(key=lambda x: x.get('time', 0))
+            all_messages.sort(key=lambda x: x.time)
             
             # 实现min_messages_per_chat过滤逻辑
             min_messages_per_chat = self.get_config("diary_generation.min_messages_per_chat", DiaryConstants.MIN_MESSAGE_COUNT)
@@ -829,7 +829,7 @@ class DiaryGeneratorAction(BaseAction):
                 # 按聊天ID分组消息
                 chat_message_counts = {}
                 for msg in all_messages:
-                    chat_id = msg.get('chat_id', '')
+                    chat_id = msg.chat_id
                     if chat_id not in chat_message_counts:
                         chat_message_counts[chat_id] = []
                     chat_message_counts[chat_id].append(msg)
@@ -847,7 +847,7 @@ class DiaryGeneratorAction(BaseAction):
                         filtered_chats += 1
                 
                 # 重新按时间排序
-                filtered_messages.sort(key=lambda x: x.get('time', 0))
+                filtered_messages.sort(key=lambda x: x.time)
                 logger.debug(f"消息过滤: 原始{len(all_messages)}条 → 过滤后{len(filtered_messages)}条 (min_messages_per_chat={min_messages_per_chat})")
                 logger.debug(f"聊天过滤: 总聊天{len(chat_message_counts)}个 → 保留{kept_chats}个,过滤{filtered_chats}个")
                 return filtered_messages
@@ -858,7 +858,7 @@ class DiaryGeneratorAction(BaseAction):
             logger.error(f"获取日期消息失败: {e}")
             return []
 
-    def get_weather_by_emotion(self, messages: List[Dict[str, Any]]) -> str:
+    def get_weather_by_emotion(self, messages: List[Any]) -> str:
         """根据聊天内容的情感分析生成天气"""
         enable_emotion = self.get_config("diary_generation.enable_emotion_analysis", True)
         
@@ -866,7 +866,7 @@ class DiaryGeneratorAction(BaseAction):
             weather_options = ["晴", "多云", "阴", "多云转晴"]
             return random.choice(weather_options)
         
-        all_content = " ".join([msg.get('processed_plain_text', '') for msg in messages])
+        all_content = " ".join([msg.processed_plain_text or '' for msg in messages])
         
         happy_words = ["哈哈", "笑", "开心", "高兴", "棒", "好", "赞", "爱", "喜欢"]
         sad_words = ["难过", "伤心", "哭", "痛苦", "失望"]
@@ -908,7 +908,7 @@ class DiaryGeneratorAction(BaseAction):
             logger.error(f"日期格式化失败: {e}")
             return f"{date},{weather}。"
 
-    def build_chat_timeline(self, messages: List[Dict[str, Any]]) -> str:
+    def build_chat_timeline(self, messages: List[Any]) -> str:
         """构建完整对话时间线（使用内置API数据）"""
         if not messages:
             return "今天没有什么特别的对话。"
@@ -922,7 +922,7 @@ class DiaryGeneratorAction(BaseAction):
         user_message_count = 0
         
         for msg in messages:
-            msg_time = datetime.datetime.fromtimestamp(msg.get('time', 0))
+            msg_time = datetime.datetime.fromtimestamp(msg.time)
             hour = msg_time.hour
             # 按时间段分组
             if hour != current_hour:
@@ -936,9 +936,9 @@ class DiaryGeneratorAction(BaseAction):
                 current_hour = hour
             
             # 添加消息内容
-            nickname = msg.get('user_nickname', '某人')
-            user_id = str(msg.get('user_id', ''))
-            content = msg.get('processed_plain_text', '')
+            nickname = msg.user_info.user_nickname or '某人'
+            user_id = str(msg.user_info.user_id)
+            content = msg.processed_plain_text or ''
             if content and len(content) > 50:
                 content = content[:50] + "..."
             # 判断是否为Bot消息
@@ -1336,7 +1336,7 @@ class DiaryManageCommand(BaseCommand):
                 "trend": "计算失败"
             }
 
-    async def _generate_diary_with_50k_limit(self, diary_action, date: str, messages: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    async def _generate_diary_with_50k_limit(self, diary_action, date: str, messages: List[Any]) -> Tuple[bool, str]:
         """使用50k强制截断生成日记"""
         try:
             # 1. 获取bot人设
@@ -1502,7 +1502,7 @@ class DiaryManageCommand(BaseCommand):
                         if qzone_success:
                             await self.send_text("🎉 已成功发布到QQ空间！")
                         else:
-                            await self.send_text("⚠️ QQ空间发布失败,可能原因:\n1. Napcat服务未启动\n2. 端口配置错误\n3. QQ空间权限问题")
+                            await self.send_text("⚠️ QQ空间发布失败,可能原因:\n1. Napcat服务未启动\n2. 端口配置错误\n3. QQ空间权限问题\n4. Bot账号配置错误")
                     else:
                         await self.send_text(f"❌ 生成失败:{result}")
                     return success, result, True
@@ -1813,7 +1813,7 @@ class DiaryPlugin(BasePlugin):
     config_schema = {
         "plugin": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
-            "config_version": ConfigField(type=str, default="2.0.0", description="配置版本"),
+            "config_version": ConfigField(type=str, default="2.0.1", description="配置版本"),
             "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ号列表")
         },
         "diary_generation": {

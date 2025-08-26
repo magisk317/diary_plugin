@@ -5,7 +5,10 @@ import json
 import random
 import os
 import re
+import hashlib
+import httpx
 from typing import List, Tuple, Type, Dict, Any, Optional
+from openai import AsyncOpenAI
 
 from src.plugin_system import (
     BasePlugin,
@@ -38,7 +41,27 @@ class DiaryConstants:
     DEFAULT_QZONE_WORD_COUNT = 300
 
 def _format_date_str(date_input: Any) -> str:
-    """统一的日期格式化函数,确保YYYY-MM-DD格式"""
+    """
+    统一的日期格式化函数,确保YYYY-MM-DD格式。
+    
+    支持多种日期格式的输入，包括datetime对象和多种字符串格式。
+    如果所有解析方法都失败，将抛出ValueError异常。
+    
+    Args:
+        date_input (Any): 输入的日期，可以是datetime对象或字符串
+        
+    Returns:
+        str: 格式化后的日期字符串，格式为YYYY-MM-DD
+        
+    Raises:
+        ValueError: 当输入的日期格式无法识别时抛出异常
+        
+    Examples:
+        >>> _format_date_str("2025/08/24")
+        "2025-08-24"
+        >>> _format_date_str(datetime.datetime(2025, 8, 24))
+        "2025-08-24"
+    """
     if isinstance(date_input, datetime.datetime):
         return date_input.strftime("%Y-%m-%d")
     elif isinstance(date_input, str):
@@ -56,11 +79,12 @@ def _format_date_str(date_input: Any) -> str:
                 return date_input
                 
         except Exception as e:
-            logger.warning(f"日期格式化失败: {e}")
+            logger.debug(f"日期格式化失败: {e}")
     
-    # 最后的后备方案
-    logger.warning(f"无法格式化日期: {date_input}, 使用今天日期")
-    return datetime.datetime.now().strftime("%Y-%m-%d")
+    # 不再使用后备方案，而是抛出异常
+    error_msg = f"无法识别的日期格式: {date_input}。支持的格式有: YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD"
+    logger.debug(error_msg)
+    raise ValueError(error_msg)
 
 # ===== 虚拟ChatStream类 =====
 
@@ -90,9 +114,9 @@ class DiaryQzoneAPI:
             logger.warning("无法获取有效的QQ账号，使用默认值0")
             self.uin = 0
         
-        # 确保uin有效
-        if self.uin <= 0:
-            logger.warning(f"QQ账号无效({self.uin})，cookie功能可能异常")
+        # 仅验证是否为正整数，不限制位数
+        if not isinstance(self.uin, int) or self.uin <= 0:
+            logger.warning(f"QQ账号无效({self.uin})，必须为正整数")
         
         # 使用更安全的文件名
         safe_uin = max(self.uin, 0)  # 确保非负数
@@ -172,7 +196,7 @@ class DiaryQzoneAPI:
                         self.cookies = json.load(f)
                         if 'p_skey' in self.cookies:
                             self.gtk2 = self._generate_gtk(self.cookies['p_skey'])
-                    logger.info("使用本地cookies文件")
+                    logger.debug("使用本地cookies文件")
                     return True
                 else:
                     logger.error("本地cookies文件也不存在")
@@ -182,7 +206,22 @@ class DiaryQzoneAPI:
                 return False
     
     def _generate_gtk(self, skey: str) -> str:
-        """生成QQ空间的gtk值"""
+        """
+        生成QQ空间API调用所需的gtk值。
+        
+        使用特定的哈希算法对QQ空间的skey进行加密，生成gtk值用于API请求验证。
+        这是QQ空间API调用的必要参数之一。
+        
+        Args:
+            skey (str): QQ空间的skey值，通常从cookie中获取
+            
+        Returns:
+            str: 计算得到的gtk值，用于QQ空间API请求验证
+            
+        Note:
+            算法细节：初始化hash_val为5381，对skey每个字符执行
+            hash_val += (hash_val << 5) + ord(skey[i])，最后与2147483647进行与运算
+        """
         hash_val = 5381
         for i in range(len(skey)):
             hash_val += (hash_val << 5) + ord(skey[i])
@@ -330,7 +369,7 @@ class ChatIdResolver:
     def resolve_filter_mode(self, filter_mode: str, target_chats: List[str], _recursion_depth: int = 0) -> Tuple[str, List[str]]:
         """根据过滤模式和目标列表解析处理策略，防止无限递归"""
         
-        # 防止无限递归
+        # 防止无限递归，最大递归深度限制为1
         if _recursion_depth > 1:
             logger.error(f"过滤模式解析递归过深，使用默认处理")
             return "PROCESS_ALL", []
@@ -985,12 +1024,12 @@ class DiaryGeneratorAction(BaseAction):
         truncated = timeline[:target_length]
         
         # 找到最后一个完整句子
-        for i in range(len(truncated) - 1, len(truncated) // 2, -1):
+        for i in range(len(truncated) - 1, len(truncated) // 2, -1):  # 1为偏移量，2为半分除数
             if truncated[i] in ['。', '！', '？', '\n']:
                 truncated = truncated[:i+1]
                 break
         
-        logger.debug(f"时间线截断: {current_tokens}→{self.estimate_token_count(truncated)} tokens")
+        logger.info(f"时间线截断: {current_tokens}→{self.estimate_token_count(truncated)} tokens")
         return truncated + "\n\n[聊天记录过长,已截断]"
 
     def smart_truncate(self, text: str, max_length: int = DiaryConstants.MAX_DIARY_LENGTH) -> str:
@@ -998,7 +1037,7 @@ class DiaryGeneratorAction(BaseAction):
         if len(text) <= max_length:
             return text
         
-        for i in range(max_length - 3, max_length // 2, -1):
+        for i in range(max_length - 3, max_length // 2, -1):  # 3为截断后缀长度，2为半分除数
             if text[i] in ['。', '！', '？', '~']:
                 return text[:i+1]
         
@@ -1019,16 +1058,23 @@ class DiaryGeneratorAction(BaseAction):
                 api_key=api_key,
             )
             
+            # 获取并验证API超时配置
+            api_timeout = self.get_config("custom_model.api_timeout", 300)
+            # 验证API超时是否在合理范围内（1-6000秒）
+            if not (1 <= api_timeout <= 6000):
+                logger.info(f"API超时配置不合理: {api_timeout}秒，将使用默认值")
+                api_timeout = 300
+            
             # 调用模型
             completion = await client.chat.completions.create(
                 model=self.get_config("custom_model.model_name", "Pro/deepseek-ai/DeepSeek-V3"),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.get_config("custom_model.temperature", 0.7),
-                timeout=self.get_config("custom_model.api_timeout", 300)
+                timeout=api_timeout
             )
             
             content = completion.choices[0].message.content
-            logger.debug(f"自定义模型调用成功: {self.get_config('custom_model.model_name')}")
+            logger.info(f"自定义模型调用成功: {self.get_config('custom_model.model_name')}")
             return True, content
             
         except Exception as e:
@@ -1156,6 +1202,10 @@ class DiaryGeneratorAction(BaseAction):
                 logger.info(f"调用自定义模型: {model_name}")
                 # 使用自定义模型（支持用户设置的上下文长度）
                 max_context_k = self.get_config("custom_model.max_context_tokens", 256)
+                # 验证上下文长度是否在合理范围内（1-10000k）
+                if not (1 <= max_context_k <= 10000):
+                    logger.info(f"上下文长度配置不合理: {max_context_k}k，将使用默认值")
+                    max_context_k = 256
                 max_context_tokens = (max_context_k * 1000) - 2000  # 自动减去2k预留
                 
                 current_tokens = self.estimate_token_count(timeline)
@@ -1451,9 +1501,13 @@ class DiaryManageCommand(BaseCommand):
 
             if action == "generate":
                 # 生成日记（忽略黑白名单，50k强制截断）
-                date = _format_date_str(param if param else datetime.datetime.now())
+                try:
+                    date = _format_date_str(param if param else datetime.datetime.now())
+                except ValueError as e:
+                    await self.send_text(f"❌ 日期格式错误: {str(e)}\n\n💡 正确的日期格式示例:\n• 2025-08-24\n• 2025/08/24\n• 2025.08.24\n\n📝 如果不指定日期，将默认生成今天的日记")
+                    return False, "日期格式错误", True
                 
-                await self.send_text(f"🔄 正在生成 {date} 的日记...")
+                await self.send_text(f"� 正在生成 {date} 的日记...")
                 
                 # 直接获取所有消息，忽略黑白名单配置
                 try:
@@ -1747,7 +1801,7 @@ class DiaryScheduler:
                     today_schedule += datetime.timedelta(days=1)
                 
                 wait_seconds = (today_schedule - now).total_seconds()
-                self.logger.debug(f"下次日记生成时间: {today_schedule.strftime('%Y-%m-%d %H:%M:%S')}")
+                self.logger.info(f"下次日记生成时间: {today_schedule.strftime('%Y-%m-%d %H:%M:%S')}")
                 
                 await asyncio.sleep(wait_seconds)
                 if self.is_running:
@@ -1812,34 +1866,39 @@ class DiaryPlugin(BasePlugin):
     
     config_schema = {
         "plugin": {
+            "_section_description": "# diary_plugin - 日记插件配置\n# 让麦麦能够回忆和记录每一天的聊天,生成个性化的日记内容\n\n# 插件基础配置",
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
-            "config_version": ConfigField(type=str, default="2.0.1", description="配置版本"),
-            "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ号列表")
+            "config_version": ConfigField(type=str, default="2.0.1", description="配置文件版本"),
+            "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ号列表,用于使用测试命令 (示例:[111,222])")
         },
         "diary_generation": {
-            "min_message_count": ConfigField(type=int, default=3, description="最少消息总数"),
-            "min_messages_per_chat": ConfigField(type=int, default=3, description="每聊天最少消息数"),
-            "enable_emotion_analysis": ConfigField(type=bool, default=True, description="启用情感分析")
+            "_section_description": "\n# 日记生成相关配置",
+            "min_message_count": ConfigField(type=int, default=3, description="生成日记所需的最少消息总数"),
+            "min_messages_per_chat": ConfigField(type=int, default=3, description="单个群组聊天条数少于此值时该群组消息不参与日记生成"),
+            "enable_emotion_analysis": ConfigField(type=bool, default=True, description="是否启用情感分析")
         },
         "qzone_publishing": {
-            "qzone_word_count": ConfigField(type=int, default=300, description="QQ空间字数"),
-            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat地址"),
-            "napcat_port": ConfigField(type=str, default="9998", description="Napcat端口")
+            "_section_description": "\n# QQ空间发布配置",
+            "qzone_word_count": ConfigField(type=int, default=300, description="设置QQ空间说说字数,范围为20-8000,超过8000则被强制截断,建议保持默认"),
+            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat服务地址"),
+            "napcat_port": ConfigField(type=str, default="9998", description="Napcat服务端口")
         },
         "custom_model": {
-            "use_custom_model": ConfigField(type=bool, default=False, description="使用自定义模型"),
-            "api_url": ConfigField(type=str, default="https://api.siliconflow.cn/v1", description="API地址"),
+            "_section_description": "\n# 自定义模型配置",
+            "use_custom_model": ConfigField(type=bool, default=False, description="自定义模型（不启用则默认使用系统首要回复模型）"),
+            "api_url": ConfigField(type=str, default="https://api.siliconflow.cn/v1", description="仅支持OpenAI API格式的模型服务,不支持Google Gemini、Anthropic Claude等原生格式"),
             "api_key": ConfigField(type=str, default="sk-your-siliconflow-key-here", description="API密钥"),
             "model_name": ConfigField(type=str, default="Pro/deepseek-ai/DeepSeek-V3", description="模型名称"),
             "temperature": ConfigField(type=float, default=0.7, description="生成温度"),
-            "max_context_tokens": ConfigField(type=int, default=256, description="上下文长度"),
-            "api_timeout": ConfigField(type=int, default=300, description="API超时时间")
+            "api_timeout": ConfigField(type=int, default=300, description="API调用超时时间（秒），大量聊天记录时建议设置更长时间"),
+            "max_context_tokens": ConfigField(type=int, default=256, description="模型上下文长度（单位：k）,填写模型的真实上限")
         },
         "schedule": {
-            "schedule_time": ConfigField(type=str, default="23:30", description="定时时间"),
-            "timezone": ConfigField(type=str, default="Asia/Shanghai", description="时区"),
-            "filter_mode": ConfigField(type=str, default="whitelist", description="过滤模式"),
-            "target_chats": ConfigField(type=list, default=[], description="目标聊天列表")
+            "_section_description": "\n# 定时任务配置",
+            "schedule_time": ConfigField(type=str, default="23:30", description="每日生成日记的时间 (HH:MM格式)"),
+            "timezone": ConfigField(type=str, default="Asia/Shanghai", description="时区设置"),
+            "filter_mode": ConfigField(type=str, default="whitelist", description="过滤模式，可选值：whitelist(白名单), blacklist(黑名单)"),
+            "target_chats": ConfigField(type=list, default=[], description="目标列表，格式：[\"group:群号\", \"private:用户qq号\"]\n# 示例：[\"group:123456789\", \"private:987654321\"]\n# 白名单模式：空列表=禁用定时任务，有内容=只处理列表中的聊天\n# 黑名单模式：空列表=处理全部聊天，有内容=处理除列表外的聊天")
         }
     }
     
@@ -1899,7 +1958,19 @@ class DiaryPlugin(BasePlugin):
     
 
     async def _start_scheduler_after_delay(self):
-        """延迟启动定时任务"""
+        """
+        延迟启动定时任务调度器。
+        
+        在插件初始化完成后，延迟10秒再启动定时任务，确保插件完全初始化
+        后再开始定时任务，避免初始化过程中的竞争条件。
+        
+        该方法通过asyncio.create_task在插件初始化时调用，是定时任务启动的
+        标准流程。
+        
+        Note:
+            延迟10秒是为了确保所有插件组件都已正确初始化，特别是数据库
+            连接和消息API等依赖服务已就绪。
+        """
         await asyncio.sleep(10)
         if self.scheduler:
             await self.scheduler.start()

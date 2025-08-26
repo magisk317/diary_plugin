@@ -241,25 +241,33 @@ max_context_tokens = 128  # 适当减少上下文长度
 ## 故障排除
 
 **Q: 命令提示"权限不足"**
+
 A: 确保QQ号已添加到admin_qqs配置中
 
 **Q: 日记生成失败，提示"消息数量不足"**
+
 A: 检查min_message_count和min_messages_per_chat配置，或当天确实聊天较少
 
 **Q: QQ空间发布失败**
+
 A: 检查Napcat服务是否运行，端口配置是否正确
 
 **Q: 自定义模型返回400错误**
+
 A: 上下文长度超限，请降低max_context_tokens配置值
 
 **Q: 自定义模型调用失败**
+
 A: 检查API地址、密钥和模型名称是否正确，确认服务商支持OpenAI格式，确保api_url使用基础URL格式
 
-**Q: 定时任务没有执行**
+**Q: 定时任务没有执行
+
 A: 检查filter_mode和target_chats配置，白名单空列表会禁用定时任务
 
 **Q: API调用超时，提示"超时错误"**
+
 A: 聊天记录过多导致处理时间过长，建议：
+
 1. 启用自定义模型：`use_custom_model = true`
 2. 增加超时时间：`api_timeout = 600`
 3. 减少上下文长度：`max_context_tokens = 128`

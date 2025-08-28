@@ -7,8 +7,8 @@
 ## ⚠️ 重要注意事项
 
 - **版本兼容性**：旧版本插件可从右侧Releases页面获取，请根据MaiBot版本选择对应插件版本
-- **Bot配置要求**：请确保MaiBot配置文件中的`bot.qq_account`填写正确，该QQ号用于QQ空间发布和消息查询功能，配置错误会导致功能异常
-- **Bot昵称设置**：`bot.nickname`可以自由更换，不影响插件功能，建议设置为个性化的昵称
+- **Bot配置要求**：请确保MaiBot配置文件 `bot_config.toml` 的`qq_account`(bot的qq号)填写正确，该QQ号用于QQ空间发布和消息查询功能，配置错误会导致功能异常
+- **Bot昵称设置**：`nickname`(bot的名字)可以自由更换，不影响插件功能。
 
 ## 安装依赖
 
@@ -93,12 +93,12 @@ enable_emotion_analysis = true
 ```
 
 - `min_message_count`：生成日记所需的最少消息总数，所有聊天合计少于此值时不生成日记
-- `min_messages_per_chat`：每个聊天的最少消息数量才会被处理，单个聊天消息数少于此值时跳过该聊天
+- `min_messages_per_chat`：每个聊天的最少消息数量，单个群组聊天消息数少于此值时跳过该群组聊天
 - `enable_emotion_analysis`：是否根据聊天情感生成天气，关闭时随机选择天气
 
 **消息过滤机制**：
 1. 先按 `min_messages_per_chat` 过滤掉消息数量不足的单个聊天
-2. 再检查剩余消息总数是否满足 `min_message_count`
+2. 再检查剩余群组消息的总数是否满足 `min_message_count`
 3. 两个条件都满足才会生成日记
 
 ### QQ空间发布配置 [qzone_publishing]
@@ -124,8 +124,8 @@ napcat_port = "9998"
 ```toml
 [custom_model]
 use_custom_model = false
-api_url = "https://api.siliconflow.cn/v1"
-api_key = "sk-your-siliconflow-key-here"
+api_url = "http://rinkoai.com/v1"
+api_key = "sk-your-rinko-key-here"
 model_name = "Pro/deepseek-ai/DeepSeek-V3"
 temperature = 0.7
 max_context_tokens = 256
@@ -143,12 +143,13 @@ api_timeout = 300
 **API URL 格式说明**：
 ```toml
 # ✅ 正确格式（基础URL）
+api_url = "http://rinkoai.com/v1"
 api_url = "https://api.siliconflow.cn/v1"
 api_url = "https://api.deepseek.com/v1"
 api_url = "http://localhost:11434/v1"
 
 # ❌ 错误格式（包含具体端点）
-api_url = "https://api.siliconflow.cn/v1/chat/completions"
+api_url = "http://rinkoai.com/v1/chat/completions"
 ```
 
 **重要限制**：

@@ -1886,8 +1886,8 @@ class DiaryPlugin(BasePlugin):
         "custom_model": {
             "_section_description": "\n# 自定义模型配置",
             "use_custom_model": ConfigField(type=bool, default=False, description="自定义模型（不启用则默认使用系统首要回复模型）"),
-            "api_url": ConfigField(type=str, default="https://api.siliconflow.cn/v1", description="仅支持OpenAI API格式的模型服务,不支持Google Gemini、Anthropic Claude等原生格式"),
-            "api_key": ConfigField(type=str, default="sk-your-siliconflow-key-here", description="API密钥"),
+            "api_url": ConfigField(type=str, default="http://rinkoai.com/v1", description="仅支持OpenAI API格式的模型服务,不支持Google Gemini、Anthropic Claude等原生格式\n# 推荐使用的站点: http://rinkoai.com/pricing\n# 咨询答疑群: 1054544611"),
+            "api_key": ConfigField(type=str, default="your-rinko-key-here", description="API密钥"),
             "model_name": ConfigField(type=str, default="Pro/deepseek-ai/DeepSeek-V3", description="模型名称"),
             "temperature": ConfigField(type=float, default=0.7, description="生成温度"),
             "api_timeout": ConfigField(type=int, default=300, description="API调用超时时间（秒），大量聊天记录时建议设置更长时间"),

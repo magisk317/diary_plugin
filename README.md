@@ -2,13 +2,21 @@
 
 让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容。
 
-当前适配maibot版本：v0.10.2
+当前mian分支，仅适配maibot版本：v0.10.2
+
+
+
+
 
 ## ⚠️ 重要注意事项
 
 - **版本兼容性**：旧版本插件可从右侧Releases页面获取，请根据MaiBot版本选择对应插件版本
 - **Bot配置要求**：请确保MaiBot配置文件 `bot_config.toml` 的`qq_account`(bot的qq号)填写正确，该QQ号用于QQ空间发布和消息查询功能，配置错误会导致功能异常
 - **Bot昵称设置**：`nickname`(bot的名字)可以自由更换，不影响插件功能。
+
+
+
+
 
 ## 安装依赖
 
@@ -26,6 +34,10 @@ pip install -r requirements.txt
 pip install httpx pytz openai
 ```
 
+
+
+
+
 ## 配置文件管理
 
 **重要说明**：插件现在支持自动生成配置文件，无需手动管理。
@@ -35,6 +47,10 @@ pip install httpx pytz openai
 1. **首次安装/更新插件**：系统自动根据config_schema生成config.toml文件
 2. **配置文件已存在**：系统保留现有配置，不会覆盖
 3. **需要恢复默认配置**：删除config.toml文件，重启插件后会自动重新生成
+
+
+
+
 
 
 ## 使用方法
@@ -80,6 +96,8 @@ pip install httpx pytz openai
 
 
 
+
+
 ## 配置说明
 
 ### 插件基础配置 [plugin]
@@ -94,6 +112,10 @@ admin_qqs = []
 - `enabled`：控制插件是否启用
 - `config_version`：配置文件版本
 - `admin_qqs`：管理员QQ号列表，只有列表中的QQ号才能使用日记命令，空列表表示无人有权限
+
+
+
+
 
 ### 日记生成配置 [diary_generation]
 
@@ -113,6 +135,10 @@ enable_emotion_analysis = true
 2. 再检查剩余群组消息的总数是否满足 `min_message_count`
 3. 两个条件都满足才会生成日记
 
+
+
+
+
 ### QQ空间发布配置 [qzone_publishing]
 
 ```toml
@@ -130,6 +156,10 @@ napcat_port = "9998"
 1. 在napcat的webui中新建**http服务器**
 2. host填**127.0.0.1**，port填**9998**
 3. 启用**CORS和Websocket**
+
+
+
+
 
 ### 自定义模型配置 [custom_model]
 
@@ -170,6 +200,10 @@ api_url = "http://rinkoai.com/v1/chat/completions"
 - 不支持Google Gemini、Anthropic Claude等原生格式
 - 请确保设置的上下文长度不超过模型真实上限，否则会出现400错误
 
+
+
+
+
 ### 定时任务配置 [schedule]
 
 ```toml
@@ -189,11 +223,15 @@ target_chats = []
 
 - `target_chats`：目标列表，格式["group:群号", "private:用户qq号"]
 
-**过滤模式说明**：
+> [!NOTE]
+>
+> **过滤模式说明**：
+
 - **白名单模式**：只处理target_chats中指定的聊天，空列表时禁用定时任务
 - **黑名单模式**：处理除target_chats外的所有聊天，空列表时处理所有聊天
 
 **配置示例**：
+
 ```toml
 # 只处理特定聊天
 filter_mode = "whitelist"
@@ -203,6 +241,10 @@ target_chats = ["group:123456789", "private:987654321"]
 filter_mode = "blacklist"
 target_chats = ["group:999999"]
 ```
+
+
+
+
 
 ## 模型和截断机制
 
@@ -216,6 +258,8 @@ target_chats = ["group:999999"]
 - 根据max_context_tokens配置截断（自动减去2k预留给提示词）
 - 支持更长上下文，可选择更强大的模型
 - 可配置API超时时间，适合处理大量聊天记录
+
+
 
 
 
@@ -240,6 +284,10 @@ target_chats = ["group:999999"]
 - 其他技术细节
 
 **建议**：日常使用INFO级别即可了解插件运行状态，遇到问题时切换到DEBUG级别查看详细信息。
+
+
+
+
 
 ## 故障排除
 
@@ -275,6 +323,8 @@ A: 聊天记录过多导致处理时间过长，建议：
 2. 增加超时时间：`api_timeout = 600`
 3. 减少上下文长度：`max_context_tokens = 128`
 4. 或调整MaiBot全局超时：config/model_config.toml中timeout改为180
+
+
 
 
 

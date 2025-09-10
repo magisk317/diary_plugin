@@ -7,12 +7,13 @@
 主要功能：
 - JSON文件存储管理：提供日记数据的本地存储和检索
 - QQ空间API集成：实现日记内容自动发布到QQ空间
-- 聊天ID解析和缓存：智能解析用户配置到真实聊天ID的映射
+- QQ空间API集成：实现日记内容自动发布到QQ空间
 
 模块组件：
 - DiaryStorage: JSON文件存储的日记管理类
 - DiaryQzoneAPI: 日记插件专用的QQ空间API
-- ChatIdResolver: 聊天ID解析器，将用户友好的配置转换为真实的聊天ID
+
+注意：ChatIdResolver已移至utils模块，提供跨模块共享的聊天ID解析功能
 
 作者: MaiBot日记插件开发团队
 版本: 2.1.0
@@ -22,7 +23,6 @@ import asyncio
 import datetime
 import time
 import json
-import random
 import os
 import re
 import hashlib
@@ -34,6 +34,9 @@ from src.plugin_system.apis import (
     get_logger,
     message_api
 )
+
+# 导入共享的工具类
+from .utils import ChatIdResolver, format_date_str
 
 logger = get_logger("diary_plugin.storage")
 
@@ -191,12 +194,12 @@ class DiaryQzoneAPI:
             hash_val += (hash_val << 5) + ord(skey[i])
         return str(hash_val & 2147483647)
     
-    async def publish_diary(self, content: str, napcat_host: str = "127.0.0.1", napcat_port: str = "9998") -> bool:
+    async def publish_diary(self, content: str, napcat_host: str = "127.0.0.1", napcat_port: str = "9998", napcat_token: str = "") -> bool:
         """发布日记到QQ空间"""
         try:
             import httpx
             
-            cookie_success = await self._renew_cookies(napcat_host, napcat_port)
+            cookie_success = await self._renew_cookies(napcat_host, napcat_port, napcat_token)
             if not cookie_success:
                 logger.error("无法获取QQ空间cookies")
                 return False
@@ -253,242 +256,7 @@ class DiaryQzoneAPI:
             return False
 
 
-class ChatIdResolver:
-    """
-    聊天ID解析器 - 将用户友好的配置转换为真实的聊天ID
-    
-    该类负责处理用户配置中的聊天标识符（如"group:123456"、"private:789012"）
-    到系统内部真实聊天ID的映射和转换。提供智能缓存机制以提高解析效率。
-    
-    主要功能：
-    - 解析用户友好的聊天配置格式
-    - 查询数据库获取真实的聊天ID
-    - 缓存映射关系以提高性能
-    - 支持白名单和黑名单过滤模式
-    - 自动检测配置变更并更新缓存
-    
-    配置格式：
-    - 群聊：group:群号 (如 "group:123456789")
-    - 私聊：private:用户QQ号 (如 "private:987654321")
-    
-    过滤模式：
-    - whitelist: 白名单模式，只处理指定的聊天
-    - blacklist: 黑名单模式，处理除指定外的所有聊天
-    
-    使用场景：
-    - 定时任务中解析目标聊天列表
-    - 手动命令中指定处理范围
-    - 插件配置验证和转换
-    
-    缓存机制：
-    - 基于配置哈希值检测变更
-    - 自动验证缓存的聊天ID有效性
-    - 支持增量更新和完整重建
-    """
-    
-    def __init__(self):
-        self.cache_file = os.path.join(os.path.dirname(__file__), "..", "data", "chat_mapping.json")
-        self.cache = {}
-        self.last_config_hash = ""
-        
-    def _get_config_hash(self, groups: List[str], privates: List[str]) -> str:
-        """计算配置的哈希值,用于检测配置变更"""
-        import hashlib
-        config_str = f"groups:{','.join(sorted(groups))};privates:{','.join(sorted(privates))}"
-        return hashlib.md5(config_str.encode()).hexdigest()
-    
-    def _load_cache(self) -> bool:
-        """加载缓存文件"""
-        try:
-            if os.path.exists(self.cache_file):
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-                    self.cache = cache_data.get("mapping", {})
-                    self.last_config_hash = cache_data.get("config_hash", "")
-                    return True
-        except Exception as e:
-            logger.error(f"加载聊天ID缓存失败: {e}")
-        return False
-    
-    def _save_cache(self, config_hash: str):
-        """保存缓存文件"""
-        try:
-            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
-            cache_data = {
-                "mapping": self.cache,
-                "config_hash": config_hash,
-                "last_update": time.time()
-            }
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"保存聊天ID缓存失败: {e}")
-    
-    def _query_chat_id_from_database(self, qq_number: str, is_group: bool) -> Optional[str]:
-        """从数据库查询聊天ID"""
-        try:
-            from src.common.database.database_model import ChatStreams
-            
-            if is_group:
-                # 查找群聊
-                stream = ChatStreams.get_or_none(ChatStreams.group_id == str(qq_number))
-            else:
-                # 查找私聊（user_id匹配且group_id为空）
-                stream = ChatStreams.get_or_none(
-                    (ChatStreams.user_id == str(qq_number)) & 
-                    (ChatStreams.group_id.is_null() | (ChatStreams.group_id == ""))
-                )
-            
-            return stream.stream_id if stream else None
-        except Exception as e:
-            logger.error(f"查询聊天ID失败 ({qq_number}, {'群聊' if is_group else '私聊'}): {e}")
-            return None
-    
-    def _validate_chat_id(self, chat_id: str) -> bool:
-        """验证聊天ID是否有效"""
-        try:
-            # 尝试获取该聊天的消息来验证ID有效性
-            test_messages = message_api.get_messages_by_time_in_chat(
-                chat_id=chat_id,
-                start_time=0,
-                end_time=time.time(),
-                limit=1,
-                filter_mai=False,
-                filter_command=False
-            )
-            return True  # 能成功调用就说明chat_id有效
-        except Exception:
-            return False
-    
-    def resolve_filter_mode(self, filter_mode: str, target_chats: List[str], _recursion_depth: int = 0) -> Tuple[str, List[str]]:
-        """根据过滤模式和目标列表解析处理策略，防止无限递归"""
-        
-        # 防止无限递归，最大递归深度限制为1
-        if _recursion_depth > 1:
-            logger.error(f"过滤模式解析递归过深，使用默认处理")
-            return "PROCESS_ALL", []
-        
-        # 根据过滤模式处理
-        if filter_mode == "whitelist":
-            if target_chats:
-                logger.debug(f"白名单模式:处理指定的{len(target_chats)}个聊天")
-                return "PROCESS_WHITELIST", target_chats
-            else:
-                logger.debug("白名单模式:空列表,禁用定时任务")
-                return "DISABLE_SCHEDULER", []
-    
-        elif filter_mode == "blacklist":
-            if target_chats:
-                logger.debug(f"黑名单模式:排除指定的{len(target_chats)}个聊天")
-                return "PROCESS_BLACKLIST", target_chats
-            else:
-                logger.debug("黑名单模式:空列表,处理全部聊天")
-                return "PROCESS_ALL", []
-        
-        else:
-            logger.warning(f"未知的过滤模式: {filter_mode},使用默认白名单模式")
-            return self.resolve_filter_mode("whitelist", target_chats, _recursion_depth + 1)
-    
-    def _parse_target_config(self, target_chats: List[str]) -> Tuple[List[str], List[str]]:
-        """解析target_chats配置为群聊和私聊列表"""
-        groups = []
-        privates = []
-        
-        for chat_config in target_chats:
-            if chat_config.startswith("group:"):
-                group_id = chat_config[6:]  # 移除"group:"前缀
-                groups.append(group_id)
-            elif chat_config.startswith("private:"):
-                user_id = chat_config[8:]  # 移除"private:"前缀
-                privates.append(user_id)
-            else:
-                logger.warning(f"无效的聊天配置格式: {chat_config}")
-        
-        return groups, privates
-    
-    def resolve_target_chats(self, filter_mode: str, target_chats: List[str]) -> Tuple[str, List[str]]:
-        """根据过滤模式解析目标聊天配置"""
-        
-        # 使用新的过滤模式解析
-        strategy, valid_configs = self.resolve_filter_mode(filter_mode, target_chats)
-        
-        if strategy == "DISABLE_SCHEDULER":
-            return strategy, []
-        
-        if strategy == "PROCESS_ALL":
-            return strategy, []  # 空列表表示处理所有聊天
-        
-        if strategy in ["PROCESS_WHITELIST", "PROCESS_BLACKLIST"]:
-            # 解析有效配置为聊天ID
-            chat_ids = self._resolve_configs_to_chat_ids(valid_configs)
-            return strategy, chat_ids
-        
-        return "PROCESS_ALL", []
-    
-    def _resolve_configs_to_chat_ids(self, target_configs: List[str]) -> List[str]:
-        """将配置列表解析为聊天ID列表"""
-        if not target_configs:
-            return []
-        
-        # 解析配置
-        groups, privates = self._parse_target_config(target_configs)
-        
-        # 计算当前配置的哈希值
-        current_config_hash = self._get_config_hash(groups, privates)
-        
-        # 检查配置是否变更
-        self._load_cache()
-        config_changed = (current_config_hash != self.last_config_hash)
-        
-        valid_chat_ids = []
-        
-        # 处理群聊配置
-        for group_qq in groups:
-            cache_key = f"group_{group_qq}"
-            
-            # 优先使用缓存
-            if not config_changed and cache_key in self.cache:
-                cached_chat_id = self.cache[cache_key]
-                if self._validate_chat_id(cached_chat_id):
-                    valid_chat_ids.append(cached_chat_id)
-                    continue
-            
-            # 缓存失效或不存在,重新查询
-            chat_id = self._query_chat_id_from_database(group_qq, True)
-            if chat_id and self._validate_chat_id(chat_id):
-                valid_chat_ids.append(chat_id)
-                self.cache[cache_key] = chat_id
-                logger.debug(f"群聊映射: {group_qq} → {chat_id}")
-            else:
-                logger.debug(f"未找到群 {group_qq} 的聊天记录,可能尚未加入该群")
-        
-        # 处理私聊配置
-        for user_qq in privates:
-            cache_key = f"private_{user_qq}"
-            
-            # 优先使用缓存
-            if not config_changed and cache_key in self.cache:
-                cached_chat_id = self.cache[cache_key]
-                if self._validate_chat_id(cached_chat_id):
-                    valid_chat_ids.append(cached_chat_id)
-                    continue
-            
-            # 缓存失效或不存在,重新查询
-            chat_id = self._query_chat_id_from_database(user_qq, False)
-            if chat_id and self._validate_chat_id(chat_id):
-                valid_chat_ids.append(chat_id)
-                self.cache[cache_key] = chat_id
-                logger.debug(f"私聊映射: {user_qq} → {chat_id}")
-            else:
-                logger.debug(f"未找到用户 {user_qq} 的聊天记录,可能尚未建立私聊")
-        
-        # 保存更新后的缓存
-        if config_changed or valid_chat_ids:
-            self._save_cache(current_config_hash)
-        
-        logger.debug(f"聊天ID解析完成: 配置{len(groups + privates)}个,有效{len(valid_chat_ids)}个")
-        return valid_chat_ids
-
+# ChatIdResolver已移至utils模块
 
 class DiaryStorage:
     """
@@ -552,10 +320,10 @@ class DiaryStorage:
             generation_time = diary_data.get("generation_time", time.time())
             
             if expected_hour is not None and expected_minute is not None:
-                filename = f"{self._format_date_str(date)}_{expected_hour:02d}{expected_minute:02d}00.json"
+                filename = f"{format_date_str(date)}_{expected_hour:02d}{expected_minute:02d}00.json"
             else:
                 timestamp = datetime.datetime.fromtimestamp(generation_time)
-                filename = f"{self._format_date_str(date)}_{timestamp.strftime('%H%M%S')}.json"
+                filename = f"{format_date_str(date)}_{timestamp.strftime('%H%M%S')}.json"
             
             file_path = os.path.join(self.data_dir, filename)
             
@@ -569,31 +337,7 @@ class DiaryStorage:
             logger.error(f"保存日记失败: {e}")
             return False
     
-    def _format_date_str(self, date_input: Any) -> str:
-        """格式化日期字符串"""
-        if isinstance(date_input, datetime.datetime):
-            return date_input.strftime("%Y-%m-%d")
-        elif isinstance(date_input, str):
-            try:
-                # 尝试多种日期格式
-                for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"]:
-                    try:
-                        date_obj = datetime.datetime.strptime(date_input, fmt)
-                        return date_obj.strftime("%Y-%m-%d")
-                    except ValueError:
-                        continue
-                
-                # 如果已经是正确格式，直接返回
-                if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', date_input):
-                    return date_input
-                    
-            except Exception as e:
-                logger.debug(f"日期格式化失败: {e}")
-        
-        # 不再使用后备方案，而是抛出异常
-        error_msg = f"无法识别的日期格式: {date_input}。支持的格式有: YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD"
-        logger.debug(error_msg)
-        raise ValueError(error_msg)
+    # _format_date_str方法已移至utils模块的format_date_str函数
     
     async def get_diary(self, date: str) -> Optional[Dict[str, Any]]:
         """获取指定日期的最新日记"""
@@ -603,7 +347,7 @@ class DiaryStorage:
             
             date_files = []
             for filename in os.listdir(self.data_dir):
-                if filename.startswith(f"{self._format_date_str(date)}_") and filename.endswith('.json'):
+                if filename.startswith(f"{format_date_str(date)}_") and filename.endswith('.json'):
                     file_path = os.path.join(self.data_dir, filename)
                     with open(file_path, 'r', encoding='utf-8') as f:
                         diary_data = json.load(f)
@@ -626,7 +370,7 @@ class DiaryStorage:
             
             date_files = []
             for filename in os.listdir(self.data_dir):
-                if filename.startswith(f"{self._format_date_str(date)}_") and filename.endswith('.json'):
+                if filename.startswith(f"{format_date_str(date)}_") and filename.endswith('.json'):
                     file_path = os.path.join(self.data_dir, filename)
                     with open(file_path, 'r', encoding='utf-8') as f:
                         diary_data = json.load(f)

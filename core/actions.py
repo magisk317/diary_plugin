@@ -38,68 +38,236 @@ from src.plugin_system.apis import (
     config_api,
     llm_api,
     message_api,
+    chat_api,
     get_logger
 )
 
-from .storage import DiaryStorage, DiaryQzoneAPI, ChatIdResolver
+from .storage import DiaryStorage, DiaryQzoneAPI
+from .utils import ChatIdResolver, DiaryConstants
 
 logger = get_logger("diary_actions")
 
-# 常量定义
-class DiaryConstants:
-    """日记插件常量"""
-    MIN_MESSAGE_COUNT = 3
-    TOKEN_LIMIT_50K = 50000
-    TOKEN_LIMIT_126K = 126000
-    MAX_DIARY_LENGTH = 8000
-    DEFAULT_QZONE_WORD_COUNT = 300
 
-
-def _format_date_str(date_input: Any) -> str:
-    """
-    统一的日期格式化函数,确保YYYY-MM-DD格式。
+class OptimizedMessageFetcher:
+    """优化的消息获取器，智能选择最适合的API"""
     
-    支持多种日期格式的输入，包括datetime对象和多种字符串格式。
-    如果所有解析方法都失败，将抛出ValueError异常。
+    def get_messages_by_config(self, configs: List[str], start_time: float, end_time: float) -> List[Any]:
+        """根据配置智能选择最适合的API获取消息"""
+        all_messages = []
+        private_qqs, group_qqs = self._parse_configs(configs)
+        
+        # 私聊：使用 chat_api.get_stream_by_user_id + get_messages_by_time_in_chat，获取完整对话（包含Bot回复）
+        if private_qqs:
+            private_messages = self._get_private_messages_optimized(private_qqs, start_time, end_time)
+            all_messages.extend(private_messages)
+        
+        # 群聊：使用改进的chat_id解析 + get_messages_by_time_in_chat
+        if group_qqs:
+            group_messages = self._get_group_messages_optimized(group_qqs, start_time, end_time)
+            all_messages.extend(group_messages)
+        
+        return sorted(all_messages, key=lambda x: x.time)
     
-    Args:
-        date_input (Any): 输入的日期，可以是datetime对象或字符串
+    def _get_private_messages_optimized(self, qq_numbers: List[str], start_time: float, end_time: float) -> List[Any]:
+        """通过QQ号获取私聊消息（包含Bot回复，严格遵守黑白名单）"""
+        all_private_messages = []
         
-    Returns:
-        str: 格式化后的日期字符串，格式为YYYY-MM-DD
-        
-    Raises:
-        ValueError: 当输入的日期格式无法识别时抛出异常
-        
-    Examples:
-        >>> _format_date_str("2025/08/24")
-        "2025-08-24"
-        >>> _format_date_str(datetime.datetime(2025, 8, 24))
-        "2025-08-24"
-    """
-    if isinstance(date_input, datetime.datetime):
-        return date_input.strftime("%Y-%m-%d")
-    elif isinstance(date_input, str):
-        try:
-            # 尝试多种日期格式
-            for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"]:
-                try:
-                    date_obj = datetime.datetime.strptime(date_input, fmt)
-                    return date_obj.strftime("%Y-%m-%d")
-                except ValueError:
+        for user_qq in qq_numbers:
+            try:
+                # 1. 精确定位私聊流（严格按用户ID匹配）
+                private_stream = chat_api.get_stream_by_user_id(user_qq)
+                if not private_stream:
+                    logger.warning(f"未找到用户{user_qq}的私聊流，跳过")
                     continue
-            
-            # 如果已经是正确格式，直接返回
-            if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', date_input):
-                return date_input
                 
-        except Exception as e:
-            logger.debug(f"日期格式化失败: {e}")
+                chat_id = private_stream.stream_id
+                
+                # 2. 获取该私聊中的完整对话（包括Bot回复）
+                messages = message_api.get_messages_by_time_in_chat(
+                    chat_id=chat_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=0,
+                    limit_mode="earliest",
+                    filter_mai=False,  # 关键：包含Bot消息
+                    filter_command=False
+                )
+                
+                all_private_messages.extend(messages)
+                logger.info(f"[完美获取] 私聊{user_qq} -> {chat_id} 获取到{len(messages)}条消息（包含Bot回复）")
+                
+            except Exception as e:
+                logger.error(f"获取私聊{user_qq}消息失败: {e}")
+        
+        return all_private_messages
     
-    # 不再使用后备方案，而是抛出异常
-    error_msg = f"无法识别的日期格式: {date_input}。支持的格式有: YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD"
-    logger.debug(error_msg)
-    raise ValueError(error_msg)
+    def _get_group_messages_optimized(self, group_qqs: List[str], start_time: float, end_time: float) -> List[Any]:
+        """通过群号获取群聊消息，纯API实现"""
+        all_group_messages = []
+        
+        for group_qq in group_qqs:
+            try:
+                # 使用chat_api获取群聊的stream_id
+                stream = chat_api.get_stream_by_group_id(group_qq)
+                if not stream:
+                    logger.warning(f"无法获取群聊{group_qq}的stream信息")
+                    continue
+                
+                chat_id = stream.stream_id
+                
+                # 使用 message_api 获取消息
+                messages = message_api.get_messages_by_time_in_chat(
+                    chat_id=chat_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=0,
+                    limit_mode="earliest",
+                    filter_mai=False,
+                    filter_command=False
+                )
+                
+                all_group_messages.extend(messages)
+                logger.debug(f"[优化获取] 群聊{group_qq} -> {chat_id} 获取到{len(messages)}条消息")
+                
+            except Exception as e:
+                logger.error(f"获取群聊{group_qq}消息失败: {e}")
+        return all_group_messages
+    
+    def _is_private_message(self, msg: Any) -> bool:
+        """判断是否为私聊消息"""
+        # 检查消息是否没有群组ID
+        try:
+            # 检查chat_info中的group_id
+            if hasattr(msg, 'chat_info') and hasattr(msg.chat_info, 'group_id'):
+                group_id = msg.chat_info.group_id
+                return not group_id or group_id.strip() == ""
+            
+            # 备用检查：直接检查消息的group_id属性
+            if hasattr(msg, 'group_id'):
+                group_id = msg.group_id
+                return not group_id or group_id.strip() == ""
+            
+            # 如果都没有group_id属性，默认认为是私聊
+            return True
+            
+        except Exception as e:
+            logger.debug(f"判断私聊消息时出错: {e}")
+            return True  # 出错时默认认为是私聊
+    
+    def _parse_configs(self, configs: List[str]) -> Tuple[List[str], List[str]]:
+        """解析配置，分离私聊和群聊"""
+        private_qqs = []
+        group_qqs = []
+        
+        for config in configs:
+            if config.startswith('private:'):
+                private_qqs.append(config[8:])  # 去掉'private:'前缀
+            elif config.startswith('group:'):
+                group_qqs.append(config[6:])  # 去掉'group:'前缀
+            else:
+                # 默认作为群聊处理
+                group_qqs.append(config)
+        
+        return private_qqs, group_qqs
+
+
+class SmartFilterSystem:
+    """智能过滤系统，支持多种过滤模式"""
+    
+    def __init__(self):
+        self.fetcher = OptimizedMessageFetcher()
+    
+    def apply_filter_mode(self, filter_mode: str, configs: List[str], start_time: float, end_time: float) -> List[Any]:
+        """应用过滤模式，智能选择最佳策略"""
+        if filter_mode == "whitelist":
+            if not configs:
+                # 空白名单：返回空列表，避免不必要的查询
+                logger.info("[智能过滤] 白名单为空，返回空消息列表")
+                return []
+            logger.debug(f"[智能过滤] 白名单模式，处理{len(configs)}个配置")
+            return self.fetcher.get_messages_by_config(configs, start_time, end_time)
+        elif filter_mode == "blacklist":
+            if not configs:
+                # 空黑名单：获取所有消息
+                logger.debug("[智能过滤] 黑名单为空，获取所有消息")
+                return self._get_all_messages(start_time, end_time)
+            
+            # 非空黑名单：获取所有消息后过滤
+            logger.debug(f"[智能过滤] 黑名单模式，排除{len(configs)}个配置")
+            all_messages = self._get_all_messages(start_time, end_time)
+            return self._filter_excluded_messages(all_messages, configs)
+        
+        elif filter_mode == "all":
+            logger.debug("[智能过滤] 全部消息模式")
+            return self._get_all_messages(start_time, end_time)
+        
+        logger.warning(f"[智能过滤] 未知的过滤模式: {filter_mode}")
+        return []
+    
+    def _get_all_messages(self, start_time: float, end_time: float) -> List[Any]:
+        """获取所有消息，纯API实现"""
+        try:
+            messages = message_api.get_messages_by_time(
+                start_time=start_time,
+                end_time=end_time,
+                limit=0,
+                limit_mode="earliest",
+                filter_mai=False
+            )
+            logger.debug(f"[智能过滤] 获取到{len(messages)}条全部消息")
+            return messages
+        except Exception as e:
+            logger.error(f"获取所有消息失败: {e}")
+            return []
+    
+    def _filter_excluded_messages(self, all_messages: List[Any], excluded_configs: List[str]) -> List[Any]:
+        """过滤掉黑名单中的消息"""
+        excluded_privates, excluded_groups = self.fetcher._parse_configs(excluded_configs)
+        filtered_messages = []
+        excluded_count = 0
+        
+        # 预先获取所有排除群聊的chat_id
+        excluded_chat_ids = set()
+        for group_qq in excluded_groups:
+            try:
+                # 使用chat_api获取群聊的stream_id
+                stream = chat_api.get_stream_by_group_id(group_qq)
+                if stream:
+                    excluded_chat_ids.add(stream.stream_id)
+                    logger.debug(f"[智能过滤] 黑名单群聊 {group_qq} -> {stream.stream_id}")
+            except Exception as e:
+                logger.error(f"获取黑名单群聊{group_qq}的chat_id失败: {e}")
+        
+        for msg in all_messages:
+            is_excluded = False
+            
+            # 检查是否为排除的私聊用户
+            if self.fetcher._is_private_message(msg):
+                user_id = getattr(msg.user_info, 'user_id', None)
+                if user_id and user_id in excluded_privates:
+                    is_excluded = True
+                    excluded_count += 1
+                    logger.debug(f"[智能过滤] 排除私聊用户 {user_id} 的消息")
+            
+            # 检查是否为排除的群聊
+            if not is_excluded:
+                chat_id = getattr(msg, 'chat_id', None)
+                if chat_id and chat_id in excluded_chat_ids:
+                    is_excluded = True
+                    excluded_count += 1
+                    logger.debug(f"[智能过滤] 排除群聊 {chat_id} 的消息")
+            
+            if not is_excluded:
+                filtered_messages.append(msg)
+        
+        logger.debug(f"[智能过滤] 黑名单过滤完成:原始{len(all_messages)}条 -> 过滤后{len(filtered_messages)}条，排除{excluded_count}条")
+        return filtered_messages
+
+
+# 常量定义已移至utils模块
+
+
+# _format_date_str函数已移至utils模块
 
 
 class DiaryGeneratorAction(BaseAction):
@@ -213,7 +381,7 @@ class DiaryGeneratorAction(BaseAction):
 
     async def get_daily_messages(self, date: str, target_chats: List[str] = None, end_hour: int = None, end_minute: int = None) -> List[Any]:
         """
-        获取指定日期的聊天记录（使用内置API）
+        获取指定日期的聊天记录（使用优化的智能API）
         
         这是日记生成的核心数据获取方法，负责从消息数据库中提取指定日期的聊天记录。
         支持多种过滤模式和聊天范围配置，确保获取到合适的消息数据用于日记生成。
@@ -284,90 +452,38 @@ class DiaryGeneratorAction(BaseAction):
                 config_target_chats = self.get_config("schedule.target_chats", [])
                 filter_mode = self.get_config("schedule.filter_mode", "whitelist")
                 
-                # 使用新的聊天ID解析器
-                strategy, resolved_chat_ids = self.chat_resolver.resolve_target_chats(filter_mode, config_target_chats)
+                # 使用新的智能过滤系统
+                filter_system = SmartFilterSystem()
+                all_messages = filter_system.apply_filter_mode(filter_mode, config_target_chats, start_time, end_time)
                 
-                if strategy == "DISABLE_SCHEDULER":
-                    # 检测到示例配置或白名单空列表的处理
+                # 检查是否为手动命令且配置为空的特殊情况
+                if not all_messages and filter_mode == "whitelist" and not config_target_chats:
                     is_manual = self.action_data.get("is_manual", False)
                     if is_manual:
                         # 手动命令:处理所有聊天（用于测试）
-                        logger.debug("手动命令检测到禁用配置,处理所有聊天用于测试")
+                        logger.debug("手动命令检测到空白名单,处理所有聊天用于测试")
                         try:
-                            messages = message_api.get_messages_by_time(
+                            all_messages = message_api.get_messages_by_time(
                                 start_time=start_time,
                                 end_time=end_time,
                                 limit=0,
                                 limit_mode="earliest",
                                 filter_mai=False  # 不过滤Bot消息
                             )
-                            all_messages.extend(messages)
                         except Exception as e:
                             logger.error(f"获取所有消息失败: {e}")
                     else:
                         # 定时任务:跳过处理,返回空消息
-                        logger.debug("定时任务检测到禁用配置,取消执行")
+                        logger.debug("定时任务检测到空白名单,取消执行")
                         return []
-                
-                elif strategy == "PROCESS_ALL":
-                    # 黑名单空列表:处理所有聊天
-                    try:
-                        messages = message_api.get_messages_by_time(
-                            start_time=start_time,
-                            end_time=end_time,
-                            limit=0,
-                            limit_mode="earliest",
-                            filter_mai=False  # 不过滤Bot消息
-                        )
-                        all_messages.extend(messages)
-                    except Exception as e:
-                        logger.error(f"获取所有消息失败: {e}")
-                
-                elif strategy == "PROCESS_WHITELIST":
-                    # 白名单:只处理指定聊天
-                    for chat_id in resolved_chat_ids:
-                        try:
-                            messages = message_api.get_messages_by_time_in_chat(
-                                chat_id=chat_id,
-                                start_time=start_time,
-                                end_time=end_time,
-                                limit=0,
-                                limit_mode="earliest",
-                                filter_mai=False,  # 不过滤Bot消息
-                                filter_command=False  # 不过滤命令消息
-                            )
-                            all_messages.extend(messages)
-                        except Exception as e:
-                            logger.error(f"获取聊天 {chat_id} 消息失败: {e}")
-                
-                elif strategy == "PROCESS_BLACKLIST":
-                    # 黑名单:获取所有聊天,然后排除指定聊天
-                    try:
-                        all_chat_messages = message_api.get_messages_by_time(
-                            start_time=start_time,
-                            end_time=end_time,
-                            limit=0,
-                            limit_mode="earliest",
-                            filter_mai=False  # 不过滤Bot消息
-                        )
-                        
-                        # 过滤掉黑名单中的聊天
-                        excluded_chat_ids = set(resolved_chat_ids)
-                        for msg in all_chat_messages:
-                            msg_chat_id = msg.chat_id
-                            if msg_chat_id not in excluded_chat_ids:
-                                all_messages.append(msg)
-                        
-                        logger.debug(f"黑名单模式:排除了{len(excluded_chat_ids)}个聊天,处理了{len(all_messages)}条消息")
-                        
-                    except Exception as e:
-                        logger.error(f"获取所有消息失败: {e}")
             
             # 按时间排序
             all_messages.sort(key=lambda x: x.time)
             
             # 实现min_messages_per_chat过滤逻辑
             min_messages_per_chat = self.get_config("diary_generation.min_messages_per_chat", DiaryConstants.MIN_MESSAGE_COUNT)
+            logger.debug(f"[过滤调试] min_messages_per_chat配置: {min_messages_per_chat}")
+            
             if min_messages_per_chat > 0:
                 # 按聊天ID分组消息
                 chat_message_counts = {}
@@ -376,6 +492,10 @@ class DiaryGeneratorAction(BaseAction):
                     if chat_id not in chat_message_counts:
                         chat_message_counts[chat_id] = []
                     chat_message_counts[chat_id].append(msg)
+                
+                logger.info(f"[过滤调试] 消息按聊天ID分组结果:")
+                for chat_id, messages in chat_message_counts.items():
+                    logger.info(f"[过滤调试] 聊天 {chat_id}: {len(messages)}条消息")
                 
                 # 过滤出满足最少消息数量要求的聊天
                 filtered_messages = []
@@ -386,13 +506,15 @@ class DiaryGeneratorAction(BaseAction):
                     if len(messages) >= min_messages_per_chat:
                         filtered_messages.extend(messages)
                         kept_chats += 1
+                        logger.debug(f"[过滤调试] 聊天 {chat_id} 保留: {len(messages)}条消息 >= {min_messages_per_chat}")
                     else:
                         filtered_chats += 1
+                        logger.debug(f"[过滤调试] 聊天 {chat_id} 过滤: {len(messages)}条消息 < {min_messages_per_chat}")
                 
                 # 重新按时间排序
                 filtered_messages.sort(key=lambda x: x.time)
-                logger.debug(f"消息过滤: 原始{len(all_messages)}条 → 过滤后{len(filtered_messages)}条 (min_messages_per_chat={min_messages_per_chat})")
-                logger.debug(f"聊天过滤: 总聊天{len(chat_message_counts)}个 → 保留{kept_chats}个,过滤{filtered_chats}个")
+                logger.info(f"[过滤调试] 消息过滤结果: 原始{len(all_messages)}条 → 过滤后{len(filtered_messages)}条")
+                logger.info(f"[过滤调试] 聊天过滤结果: 总聊天{len(chat_message_counts)}个 → 保留{kept_chats}个,过滤{filtered_chats}个")
                 return filtered_messages
             
             return all_messages
@@ -415,17 +537,13 @@ class DiaryGeneratorAction(BaseAction):
             str: 生成的天气描述，如"晴"、"多云"、"雨"等
         
         Note:
-            - 当enable_emotion_analysis配置为False时，随机返回中性天气
             - 情感分析基于预定义的情感词汇库
             - 天气映射规则：开心→晴天，难过→雨天，愤怒→阴天等
-        
         Examples:
             >>> weather = action.get_weather_by_emotion(messages)
             >>> print(weather)  # "晴" 或 "多云" 等
         """
-        enable_emotion = self.get_config("diary_generation.enable_emotion_analysis", True)
-        
-        if not enable_emotion or not messages:
+        if not messages:
             weather_options = ["晴", "多云", "阴", "多云转晴"]
             return random.choice(weather_options)
         
@@ -441,13 +559,13 @@ class DiaryGeneratorAction(BaseAction):
         angry_count = sum(1 for word in angry_words if word in all_content)
         calm_count = sum(1 for word in calm_words if word in all_content)
         
-        if happy_count >= 3:
+        if happy_count >= 2:
             return "晴"
         elif happy_count >= 1:
             return "多云转晴"
-        elif sad_count >= 2:
+        elif sad_count >= 1:
             return "雨"
-        elif angry_count >= 2:
+        elif angry_count >= 1:
             return "阴"
         elif calm_count >= 1:
             return "多云"
@@ -488,21 +606,22 @@ class DiaryGeneratorAction(BaseAction):
 
     def build_chat_timeline(self, messages: List[Any]) -> str:
         """
-        构建完整对话时间线（使用内置API数据）
+        构建完整对话时间线（包含图片消息）
         
-        将消息列表转换为结构化的时间线文本，用于日记生成的输入。
-        按时间段分组显示消息，并区分Bot消息和用户消息。
+        将消息列表转换为结构化的时间线文本，支持文本和图片消息的统一展示。
+        按时间段分组显示消息，并区分Bot消息和用户消息。图片消息以[图片]前缀标识。
         
         Args:
             messages (List[Any]): 按时间排序的消息列表
         
         Returns:
-            str: 格式化的时间线文本，包含时间段标记和消息内容
+            str: 格式化的时间线文本，包含时间段标记和消息内容（文本+图片）
         
         Note:
             - 消息按小时分组，显示为"上午X点"、"下午X点"、"晚上X点"
             - Bot消息显示为"我:"，用户消息显示为"昵称:"
-            - 长消息会被截断为50字符并添加省略号
+            - 图片消息显示为"[图片]描述"格式
+            - 长文本消息会被截断为50字符并添加省略号
             - 统计信息存储在self._timeline_stats中供后续使用
         
         Examples:
@@ -510,6 +629,7 @@ class DiaryGeneratorAction(BaseAction):
             >>> print(timeline)
             # 【上午9点】
             # 张三: 早上好！
+            # 张三: [图片]早餐照片
             # 我: 早上好，今天天气不错呢
             # 【下午2点】
             # 李四: 下午有什么安排吗？
@@ -521,6 +641,10 @@ class DiaryGeneratorAction(BaseAction):
         current_hour = -1
         bot_nickname = config_api.get_global_config("bot.nickname", "麦麦")
         bot_qq_account = str(config_api.get_global_config("bot.qq_account", ""))
+        
+        # 初始化图片处理器
+        from .image_processor import ImageProcessor
+        image_processor = ImageProcessor()
         
         bot_message_count = 0
         user_message_count = 0
@@ -539,19 +663,32 @@ class DiaryGeneratorAction(BaseAction):
                 timeline_parts.append(f"\n【{time_period}】")
                 current_hour = hour
             
-            # 添加消息内容
+            # 获取用户信息
             nickname = msg.user_info.user_nickname or '某人'
             user_id = str(msg.user_info.user_id)
-            content = msg.processed_plain_text or ''
-            if content and len(content) > 50:
-                content = content[:50] + "..."
-            # 判断是否为Bot消息
-            if user_id == bot_qq_account:
-                timeline_parts.append(f"我: {content}")
-                bot_message_count += 1
+            
+            # 判断消息类型并处理
+            if image_processor._is_image_message(msg):
+                # 图片消息处理
+                description = image_processor._get_image_description(msg)
+                if user_id == bot_qq_account:
+                    timeline_parts.append(f"我: [图片]{description}")
+                    bot_message_count += 1
+                else:
+                    timeline_parts.append(f"{nickname}: [图片]{description}")
+                    user_message_count += 1
             else:
-                timeline_parts.append(f"{nickname}: {content}")
-                user_message_count += 1
+                # 文本消息处理（保持原有逻辑）
+                content = msg.processed_plain_text or ''
+                if content and len(content) > 50:
+                    content = content[:50] + "..."
+                # 判断是否为Bot消息
+                if user_id == bot_qq_account:
+                    timeline_parts.append(f"我: {content}")
+                    bot_message_count += 1
+                else:
+                    timeline_parts.append(f"{nickname}: {content}")
+                    user_message_count += 1
         
         # 存储统计信息
         self._timeline_stats = {
@@ -678,8 +815,6 @@ class DiaryGeneratorAction(BaseAction):
             >>>     print(f"生成失败: {content}")
         """
         try:
-            from openai import AsyncOpenAI
-            
             api_key = self.get_config("custom_model.api_key", "")
             if not api_key or api_key == "sk-your-siliconflow-key-here":
                 return False, "自定义模型API密钥未配置"
@@ -687,12 +822,12 @@ class DiaryGeneratorAction(BaseAction):
             # 创建OpenAI客户端
             client = AsyncOpenAI(
                 base_url=self.get_config("custom_model.api_url", "https://api.siliconflow.cn/v1"),
-                api_key=api_key,
+                api_key=api_key
             )
             
             # 获取并验证API超时配置
             api_timeout = self.get_config("custom_model.api_timeout", 300)
-            # 验证API超时是否在合理范围内（1-6000秒）
+            # 验证API超时是否在合理范围内（1-6000秒，即100分钟）
             if not (1 <= api_timeout <= 6000):
                 logger.info(f"API超时配置不合理: {api_timeout}秒，将使用默认值")
                 api_timeout = 300
@@ -705,7 +840,10 @@ class DiaryGeneratorAction(BaseAction):
                 timeout=api_timeout
             )
             
-            content = completion.choices[0].message.content
+            if completion.choices and len(completion.choices) > 0:
+                content = completion.choices[0].message.content
+            else:
+                raise RuntimeError("模型返回的响应为空或格式错误")
             logger.info(f"自定义模型调用成功: {self.get_config('custom_model.model_name')}")
             return True, content
             
@@ -715,9 +853,9 @@ class DiaryGeneratorAction(BaseAction):
 
     async def generate_with_default_model(self, prompt: str, timeline: str) -> Tuple[bool, str]:
         """
-        使用默认模型生成日记（带126k截断）
+        使用默认模型生成日记（带50k截断）
         
-        调用系统配置的默认模型来生成日记内容。自动处理126k token限制，
+        调用系统配置的默认模型来生成日记内容。自动处理50k token限制，
         确保输入不会超过模型的上下文长度。
         
         Args:
@@ -728,7 +866,7 @@ class DiaryGeneratorAction(BaseAction):
             Tuple[bool, str]: (是否成功, 生成的内容或错误信息)
         
         Note:
-            - 强制执行126k token限制（128k-2k预留）
+            - 强制执行50k token限制，确保兼容性
             - 当超过限制时自动截断时间线内容
             - 使用系统的replyer模型配置
         
@@ -738,12 +876,12 @@ class DiaryGeneratorAction(BaseAction):
             >>>     print(f"生成成功: {content}")
         """
         try:
-            # 默认模型强制126k截断（128k-2k预留）
-            max_tokens = DiaryConstants.TOKEN_LIMIT_126K
+            # 默认模型使用50k截断，确保更好的兼容性
+            max_tokens = DiaryConstants.TOKEN_LIMIT_50K
             current_tokens = self._estimate_tokens(timeline)
             
             if current_tokens > max_tokens:
-                logger.debug(f"默认模型:聊天记录超过126k tokens,进行截断")
+                logger.debug(f"默认模型:聊天记录超过50k tokens,进行截断")
                 # 重新构建截断后的prompt
                 truncated_timeline = self._truncate_messages(timeline, max_tokens)
                 prompt = prompt.replace(timeline, truncated_timeline)
@@ -789,7 +927,8 @@ class DiaryGeneratorAction(BaseAction):
         try:
             napcat_host = self.get_config("qzone_publishing.napcat_host", "127.0.0.1")
             napcat_port = self.get_config("qzone_publishing.napcat_port", "9998")
-            success = await self.qzone_api.publish_diary(diary_content, napcat_host, napcat_port)
+            napcat_token = self.get_config("qzone_publishing.napcat_token", "")
+            success = await self.qzone_api.publish_diary(diary_content, napcat_host, napcat_port, napcat_token)
             
             diary_data = await self.storage.get_diary(date)
             if diary_data:
@@ -843,7 +982,6 @@ class DiaryGeneratorAction(BaseAction):
             7. 选择模型并生成内容
             8. 进行字数控制和格式化
             9. 保存到本地存储
-        
         Note:
             - 支持自定义模型和默认模型两种生成方式
             - 自动处理Token限制和消息截断
@@ -860,7 +998,6 @@ class DiaryGeneratorAction(BaseAction):
         try:
             # 1. 获取bot人设
             personality = await self.get_bot_personality()
-            
             # 2. 获取当天消息（使用内置API）
             messages = await self.get_daily_messages(date, target_chats)
             
@@ -877,10 +1014,6 @@ class DiaryGeneratorAction(BaseAction):
             # 5. 生成prompt
             target_length = self.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
             
-            current_time = datetime.datetime.now()
-            is_today = current_time.strftime("%Y-%m-%d") == date
-            time_desc = "到现在为止" if is_today else "这一天"
-            
             # 构建完整的人设描述
             personality_desc = personality['core']
             if personality.get('side'):
@@ -894,19 +1027,20 @@ class DiaryGeneratorAction(BaseAction):
             prompt = f"""我是{personality_desc}
 我平时说话的风格是:{personality['style']}{interest_desc}
 
-今天是{date},回顾一下{time_desc}的聊天记录:
+今天是{date},基于以下聊天记录写日记:
 {timeline}
 
-现在我要写一篇{target_length}字左右的日记,记录{time_desc}的感受:
+现在我要写一篇{target_length}字左右的日记,记录今天聊天中的感受:
 1. 开头必须是日期和天气:{date_with_weather}
 2. 像睡前随手写的感觉,轻松自然
-3. 回忆{time_desc}的对话,加入我的真实感受
-4. 可以吐槽、感慨,体现我的个性
-5. 如果有有趣的事就重点写,平淡的一天就简单记录
-6. 偶尔加一两句小总结或感想
-7. 不要写成流水账,要有重点和感情色彩
-8. 用第一人称"我"来写
-9. 结合我的兴趣爱好,对相关话题可以多写一些感想
+3. 基于聊天记录中的对话内容,加入我的真实感受
+4. 只记录聊天记录中体现的事件和对话,不要推测未发生的内容
+5. 可以吐槽、感慨,体现我的个性
+6. 如果有有趣的事就重点写,平淡的一天就简单记录
+7. 偶尔加一两句小总结或感想
+8. 不要写成流水账,要有重点和感情色彩
+9. 用第一人称"我"来写
+10. 结合我的兴趣爱好,对相关话题可以多写一些感想
 
 我的日记:"""
 
@@ -919,21 +1053,56 @@ class DiaryGeneratorAction(BaseAction):
                 logger.info(f"调用自定义模型: {model_name}")
                 # 使用自定义模型（支持用户设置的上下文长度）
                 max_context_k = self.get_config("custom_model.max_context_tokens", 256)
-                # 验证上下文长度是否在合理范围内（1-10000k）
+                # 验证上下文长度是否在合理范围内（1-10000k，即10M tokens）
                 if not (1 <= max_context_k <= 10000):
                     logger.info(f"上下文长度配置不合理: {max_context_k}k，将使用默认值")
                     max_context_k = 256
-                max_context_tokens = (max_context_k * 1000) - 2000  # 自动减去2k预留
+                max_context_tokens = (max_context_k * 1000) - 2000  # 预留2k tokens用于系统提示和响应
                 
                 current_tokens = self._estimate_tokens(timeline)
                 if current_tokens > max_context_tokens:
                     logger.debug(f"自定义模型:聊天记录超过{max_context_k}k tokens,进行截断")
                     truncated_timeline = self._truncate_messages(timeline, max_context_tokens)
                     prompt = prompt.replace(timeline, truncated_timeline)
-                success, diary_content = await self.generate_with_custom_model(prompt)
+                # 直接调用自定义模型生成，避免递归
+                try:
+                    api_key = self.get_config("custom_model.api_key", "")
+                    if not api_key or api_key == "sk-your-siliconflow-key-here":
+                        success, diary_content = False, "自定义模型API密钥未配置"
+                    else:
+                        # 创建OpenAI客户端
+                        client = AsyncOpenAI(
+                            base_url=self.get_config("custom_model.api_url", "https://api.siliconflow.cn/v1"),
+                            api_key=api_key
+                        )
+                        
+                        # 获取并验证API超时配置（1-6000秒，即100分钟）
+                        api_timeout = self.get_config("custom_model.api_timeout", 300)
+                        if not (1 <= api_timeout <= 6000):
+                            logger.info(f"API超时配置不合理: {api_timeout}秒，将使用默认值")
+                            api_timeout = 300
+                        
+                        # 调用模型
+                        completion = await client.chat.completions.create(
+                            model=self.get_config("custom_model.model_name", "Pro/deepseek-ai/DeepSeek-V3"),
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=self.get_config("custom_model.temperature", 0.7),
+                            timeout=api_timeout
+                        )
+                        
+                        if completion.choices and len(completion.choices) > 0:
+                            content = completion.choices[0].message.content
+                        else:
+                            raise RuntimeError("模型返回的响应为空或格式错误")
+                        logger.info(f"自定义模型调用成功: {self.get_config('custom_model.model_name')}")
+                        success, diary_content = True, content
+                        
+                except Exception as e:
+                    logger.error(f"自定义模型调用失败: {e}")
+                    success, diary_content = False, f"自定义模型调用出错: {str(e)}"
             else:
                 logger.info("调用系统默认模型")
-                # 使用默认模型（强制126k截断）
+                # 使用默认模型（强制50k截断）
                 success, diary_content = await self.generate_with_default_model(prompt, timeline)
             
             if not success or not diary_content:
@@ -962,8 +1131,6 @@ class DiaryGeneratorAction(BaseAction):
             }
             
             await self.storage.save_diary(diary_record)
-            
-            
             return True, diary_content
             
         except Exception as e:

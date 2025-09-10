@@ -17,7 +17,6 @@
 import asyncio
 import datetime
 import time
-import random
 from typing import List, Dict, Any
 
 from src.plugin_system import (
@@ -28,55 +27,12 @@ from src.plugin_system.apis import (
     get_logger
 )
 
+# 导入共享的工具类
+from .utils import DiaryConstants, MockChatStream, ChatIdResolver
+from .storage import DiaryStorage
+from .actions import DiaryGeneratorAction
+
 logger = get_logger("diary_plugin.scheduler")
-
-
-class DiaryConstants:
-    """
-    日记插件常量定义类
-    
-    包含日记插件运行所需的各种常量配置，如消息数量限制、
-    token限制、日记长度限制等核心参数。
-    
-    Attributes:
-        MIN_MESSAGE_COUNT (int): 生成日记所需的最少消息数量
-        TOKEN_LIMIT_50K (int): 50K token限制
-        TOKEN_LIMIT_126K (int): 126K token限制  
-        MAX_DIARY_LENGTH (int): 日记最大长度限制
-        DEFAULT_QZONE_WORD_COUNT (int): QQ空间默认字数
-    """
-    MIN_MESSAGE_COUNT = 3
-    TOKEN_LIMIT_50K = 50000
-    TOKEN_LIMIT_126K = 126000
-    MAX_DIARY_LENGTH = 8000
-    DEFAULT_QZONE_WORD_COUNT = 300
-
-
-class MockChatStream:
-    """
-    虚拟聊天流类
-    
-    用于定时任务中的Action初始化，提供一个模拟的聊天环境。
-    当定时任务需要创建Action实例时，由于没有真实的聊天流，
-    使用此类提供必要的属性和接口。
-    
-    Attributes:
-        stream_id (str): 虚拟流ID，标识为定时任务
-        platform (str): 平台标识，默认为qq
-        group_info: 群组信息，定时任务中为None
-        user_info: 用户信息，定时任务中为None
-    
-    Usage:
-        >>> mock_stream = MockChatStream()
-        >>> action = SomeAction(chat_stream=mock_stream, ...)
-    """
-    
-    def __init__(self):
-        """初始化虚拟聊天流"""
-        self.stream_id = "diary_scheduled_task"
-        self.platform = "qq"
-        self.group_info = None
-        self.user_info = None
 
 
 class EmotionAnalysisTool(BaseTool):
@@ -208,8 +164,6 @@ class DiaryScheduler:
         self.is_running = False
         self.task = None
         self.logger = get_logger("DiaryScheduler")
-        # 延迟导入避免循环依赖
-        from .storage import DiaryStorage
         self.storage = DiaryStorage()
     
     def _get_timezone_now(self):
@@ -253,8 +207,6 @@ class DiaryScheduler:
         target_chats = self.plugin.get_config("schedule.target_chats", [])
         filter_mode = self.plugin.get_config("schedule.filter_mode", "whitelist")
         
-        # 延迟导入避免循环依赖
-        from .storage import ChatIdResolver
         chat_resolver = ChatIdResolver()
         strategy, _ = chat_resolver.resolve_target_chats(filter_mode, target_chats)
         
@@ -333,9 +285,6 @@ class DiaryScheduler:
         """
         try:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
-            
-            # 延迟导入避免循环依赖
-            from .actions import DiaryGeneratorAction
             
             diary_action = DiaryGeneratorAction(
                 action_data={"date": today, "target_chats": [], "is_manual": False},

@@ -44,7 +44,7 @@ from .core import (
 )
 
 # 导入工具组件
-from .core.scheduler import EmotionAnalysisTool
+from .core import EmotionAnalysisTool
 
 logger = get_logger("diary_plugin")
 
@@ -106,14 +106,14 @@ class DiaryPlugin(BasePlugin):
         "diary_generation": {
             "_section_description": "\n# 日记生成相关配置",
             "min_message_count": ConfigField(type=int, default=3, description="生成日记所需的最少消息总数"),
-            "min_messages_per_chat": ConfigField(type=int, default=3, description="单个群组聊天条数少于此值时该群组消息不参与日记生成"),
-            "enable_emotion_analysis": ConfigField(type=bool, default=True, description="是否启用情感分析")
+            "min_messages_per_chat": ConfigField(type=int, default=3, description="单个群组聊天条数少于此值时该群组消息不参与日记生成")
         },
         "qzone_publishing": {
             "_section_description": "\n# QQ空间发布配置",
             "qzone_word_count": ConfigField(type=int, default=300, description="设置QQ空间说说字数,范围为20-8000,超过8000则被强制截断,建议保持默认"),
-            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat服务地址"),
-            "napcat_port": ConfigField(type=str, default="9998", description="Napcat服务端口")
+            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat服务地址,Docker环境可使用'napcat'"),
+            "napcat_port": ConfigField(type=str, default="9998", description="Napcat服务端口"),
+            "napcat_token": ConfigField(type=str, default="", description="Napcat服务认证Token,在Napcat WebUI的网络配置中设置,为空则不使用token")
         },
         "custom_model": {
             "_section_description": "\n# 自定义模型配置",
@@ -185,6 +185,13 @@ class DiaryPlugin(BasePlugin):
                     self.logger.info(f"黑名单模式: 排除{len(target_chats)}个聊天,定时任务将启动")
                 else:
                     self.logger.info("黑名单模式: 无排除列表,处理全部聊天,定时任务将启动")
+            
+            # 显示Napcat token配置状态
+            napcat_token = self.get_config("qzone_publishing.napcat_token", "")
+            if napcat_token:
+                self.logger.info("Napcat Token已配置,QQ空间发布功能启用安全验证")
+            else:
+                self.logger.info("Napcat Token未配置,将使用无Token模式连接")
             
             # 显示模型配置
             if use_custom_model:

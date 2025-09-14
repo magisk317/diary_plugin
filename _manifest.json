@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "日记插件 (Diary Plugin)",
   "version": "2.1.0",
-  "description": "让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容",
+  "description": "让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容(适配0.10.0及以上)",
   "author": {
     "name": "约瑟夫.k",
     "url": "https://github.com/bockegai"

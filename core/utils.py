@@ -13,11 +13,64 @@ import os
 import json
 import time
 import hashlib
-from typing import List, Tuple, Optional, Any
+from typing import List, Tuple, Optional, Any,Dict,Callable
 
-from src.plugin_system.apis import get_logger, message_api
+from src.chat.message_receive import message
+from src.chat.message_receive.chat_stream import ChatStream
+from src.plugin_system.apis import get_logger, message_api, config_api,generator_api
+
 
 logger = get_logger("diary_plugin.utils")
+
+
+async def style_send(chat_stream: ChatStream, text: str, send_func: Callable):
+    result_status, data = await generator_api.rewrite_reply(
+        chat_stream=chat_stream,
+        reply_data={
+            "raw_reply": text,
+            "reason": "想要输出一段符合风格的文本",
+        },
+    )
+        
+    if result_status:
+        for reply_seg in data.reply_set.reply_data:
+            send_data = reply_seg.content
+            await send_func(send_data)
+
+    
+async def get_bot_personality() -> Dict[str, str]:
+    """
+    实时获取bot人设信息
+    
+    从全局配置中获取Bot的人格设置，用于生成个性化的日记内容。
+    适配MaiBot 0.10.2版本的新配置项结构。
+    
+    Returns:
+        Dict[str, str]: 包含Bot人设信息的字典，包含以下键：
+            - core: 核心人设描述
+            - side: 情感特征/人设补充
+            - style: 回复风格
+            - interest: 兴趣爱好
+    
+    Examples:
+        >>> personality = await action.get_bot_personality()
+        >>> print(personality['core'])  # "是一个活泼可爱的AI助手"
+        >>> print(personality['style'])  # "温和友善，偶尔调皮"
+    """
+    personality = config_api.get_global_config("personality.personality", "是一个机器人助手")
+    reply_style = config_api.get_global_config("personality.reply_style", "")
+    interest = config_api.get_global_config("personality.interest", "")
+    nickname = config_api.get_global_config("bot.nickname", "")
+    alias_names = config_api.get_global_config("bot.alias_names", [])
+    
+    return {
+        "core": personality,
+        "style": reply_style,
+        "interest": interest,
+        "nickname": nickname,
+        "alias_names": alias_names
+    }
+
 
 
 def format_date_str(date_input: Any) -> str:

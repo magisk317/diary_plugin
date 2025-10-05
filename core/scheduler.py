@@ -288,7 +288,7 @@ class DiaryScheduler:
             
             diary_action = DiaryGeneratorAction(
                 action_data={"date": today, "target_chats": [], "is_manual": False},
-                reasoning="定时生成日记",
+                action_reasoning="定时生成日记",
                 cycle_timers={},
                 thinking_id="scheduled_diary",
                 chat_stream=MockChatStream(),

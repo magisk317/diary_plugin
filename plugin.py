@@ -100,17 +100,29 @@ class DiaryPlugin(BasePlugin):
         "plugin": {
             "_section_description": "# diary_plugin - 日记插件配置\n# 让麦麦能够回忆和记录每一天的聊天,生成个性化的日记内容\n\n# 插件基础配置",
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
-            "config_version": ConfigField(type=str, default="2.1.0", description="配置文件版本"),
-            "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ号列表,用于使用测试命令 (示例:[111,222])")
+            "config_version": ConfigField(type=str, default="2.2.4", description="配置文件版本"),
+            "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ号列表,用于使用测试命令 (示例:[111,222])"),
+            # 新增：组件级开关
+            "enable_action": ConfigField(type=bool, default=False, description="是否注册并启用 DiaryGeneratorAction"),
+            "enable_tool": ConfigField(type=bool, default=False, description="是否注册并启用 EmotionAnalysisTool"),
+            "enable_command": ConfigField(type=bool, default=True, description="是否注册并启用 DiaryManageCommand")
         },
         "diary_generation": {
             "_section_description": "\n# 日记生成相关配置",
             "min_message_count": ConfigField(type=int, default=3, description="生成日记所需的最少消息总数"),
-            "min_messages_per_chat": ConfigField(type=int, default=3, description="单个群组聊天条数少于此值时该群组消息不参与日记生成")
+            "min_messages_per_chat": ConfigField(type=int, default=3, description="单个群组聊天条数少于此值时该群组消息不参与日记生成"),
+            "style": ConfigField(type=str, default="diary", description="生成样式: diary | qqzone | custom"),
+            "custom_prompt": ConfigField(
+                type=str,
+                default="",
+                description="当 style=custom 时使用的模板。可用占位符: {date},{timeline},{date_with_weather},{target_length},{personality_desc},{style},{interest},{name}"
+            ),
+            "enable_syle_send": ConfigField(type=bool, default=False, description="是否开启回复改写")
         },
         "qzone_publishing": {
             "_section_description": "\n# QQ空间发布配置",
-            "qzone_word_count": ConfigField(type=int, default=300, description="设置QQ空间说说字数,范围为20-8000,超过8000则被强制截断,建议保持默认"),
+            "qzone_min_word_count": ConfigField(type=int, default=150, description="最小字数，范围20-8000"),
+            "qzone_max_word_count": ConfigField(type=int, default=350, description="最大字数，范围20-8000，必须≥最小值"),
             "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat服务地址,Docker环境可使用'napcat'"),
             "napcat_port": ConfigField(type=str, default="9998", description="Napcat服务端口"),
             "napcat_token": ConfigField(type=str, default="", description="Napcat服务认证Token,在Napcat WebUI的网络配置中设置,为空则不使用token")
@@ -241,8 +253,19 @@ class DiaryPlugin(BasePlugin):
         Note:
             所有组件都已在core模块中实现，本方法仅负责向插件系统注册
         """
-        return [
-            (DiaryGeneratorAction.get_action_info(), DiaryGeneratorAction),
-            (EmotionAnalysisTool.get_tool_info(), EmotionAnalysisTool),
-            (DiaryManageCommand.get_command_info(), DiaryManageCommand)
-        ]
+        components: List[Tuple[ComponentInfo, Type]] = []
+        try:
+            enable_action = self.get_config("plugin.enable_action", True)
+            enable_tool = self.get_config("plugin.enable_tool", True)
+            enable_command = self.get_config("plugin.enable_command", True)
+        except Exception:
+            enable_action = enable_tool = enable_command = True
+
+        if enable_action:
+            components.append((DiaryGeneratorAction.get_action_info(), DiaryGeneratorAction))
+        if enable_tool:
+            components.append((EmotionAnalysisTool.get_tool_info(), EmotionAnalysisTool))
+        if enable_command:
+            components.append((DiaryManageCommand.get_command_info(), DiaryManageCommand))
+
+        return components

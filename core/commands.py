@@ -22,13 +22,14 @@ import datetime
 import time
 import re
 from typing import List, Tuple, Dict, Any, Optional
+import random
 
 from src.plugin_system import BaseCommand
 from src.plugin_system.apis import config_api, message_api, get_logger
 
 from .storage import DiaryStorage
-from .actions import DiaryGeneratorAction
-from .utils import ChatIdResolver, DiaryConstants, MockChatStream, format_date_str
+from .diary_service import DiaryService
+from .utils import ChatIdResolver, DiaryConstants, MockChatStream, format_date_str, get_bot_personality, style_send
 
 logger = get_logger("diary_commands")
 
@@ -811,7 +812,7 @@ class DiaryManageCommand(BaseCommand):
         """
         try:
             # 1. 获取bot人设
-            personality = await diary_action.get_bot_personality()
+            personality = await get_bot_personality()
             
             # 2. 构建时间线
             timeline = diary_action.build_chat_timeline(messages)
@@ -827,7 +828,20 @@ class DiaryManageCommand(BaseCommand):
             date_with_weather = diary_action.get_date_with_weather(date, weather)
             
             # 5. 生成prompt
-            target_length = diary_action.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
+            # 目标长度：仅[min,max]随机
+            min_wc = diary_action.get_config("qzone_publishing.qzone_min_word_count", 250)
+            max_wc = diary_action.get_config("qzone_publishing.qzone_max_word_count", 350)
+            if not isinstance(min_wc, int):
+                min_wc = 250
+            if not isinstance(max_wc, int):
+                max_wc = 350
+            if min_wc < 20:
+                min_wc = 20
+            if max_wc > DiaryConstants.MAX_DIARY_LENGTH:
+                max_wc = DiaryConstants.MAX_DIARY_LENGTH
+            if max_wc < min_wc:
+                max_wc = min_wc
+            target_length = random.randint(min_wc, max_wc)
             
             current_time = datetime.datetime.now()
             is_today = current_time.strftime("%Y-%m-%d") == date
@@ -843,7 +857,42 @@ class DiaryManageCommand(BaseCommand):
             if personality.get('interest'):
                 interest_desc = f"\n我的兴趣爱好:{personality['interest']}"
             
-            prompt = f"""我是{personality_desc}
+            style = diary_action.get_config("diary_generation.style", "diary")
+            if style == "custom":
+                template = diary_action.get_config("diary_generation.custom_prompt", "") or ""
+                context = {
+                    "date": date,
+                    "timeline": timeline,
+                    "date_with_weather": date_with_weather,
+                    "target_length": target_length,
+                    "personality_desc": personality_desc,
+                    "style": personality.get("style", ""),
+                    "interest": personality.get("interest", ""),
+                    "name": f"我是{personality_desc}",
+                    "time_desc": time_desc,
+                }
+                try:
+                    prompt = template.format(**context)
+                    if not prompt.strip():
+                        raise ValueError("empty custom prompt")
+                except Exception:
+                    style = "diary"
+            if style == "qqzone":
+                prompt = f"""{personality_desc}
+我平时说话的风格是:{personality['style']}{interest_desc}
+
+今天是{date}，以下是我{time_desc}的一些聊天片段：
+{timeline}
+
+请用大约{target_length}字写一条适合QQ空间的说说：
+- 开头包含日期与天气：{date_with_weather}
+- 口语化、轻松自然，像随手发的感想
+- 有情绪和个性，不要写成流水账
+- 结合我的兴趣或当天的话题，挑重点写
+- 只输出正文，不要任何前后缀、引号、括号、表情、@ 等
+输出："""
+            elif style == "diary":
+                prompt = f"""我是{personality_desc}
 我平时说话的风格是:{personality['style']}{interest_desc}
 
 今天是{date},回顾一下{time_desc}的聊天记录:
@@ -873,8 +922,10 @@ class DiaryManageCommand(BaseCommand):
             if not success or not diary_content:
                 return False, diary_content or "模型生成日记失败"
             
-            # 7. 字数控制
-            max_length = diary_action.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
+            # 7. 字数控制：仅使用最大上限
+            max_length = diary_action.get_config("qzone_publishing.qzone_max_word_count", 350)
+            if not isinstance(max_length, int):
+                max_length = 350
             if max_length > DiaryConstants.MAX_DIARY_LENGTH:
                 max_length = DiaryConstants.MAX_DIARY_LENGTH
             if len(diary_content) > max_length:
@@ -954,7 +1005,7 @@ class DiaryManageCommand(BaseCommand):
                         return False, "无权限", True
                     else:
                         # 私聊内:返回无权限提示,阻止后续处理
-                        await self.send_text("❌ 您没有权限使用此命令。")
+                        await style_send("❌ 您没有权限使用此命令。")
                         return False, "无权限", True
 
             if action == "generate":
@@ -967,7 +1018,12 @@ class DiaryManageCommand(BaseCommand):
                     await self.send_text(f"❌ 日期格式错误: {str(e)}\n\n💡 正确的日期格式示例:\n• 2025-08-24\n• 2025/08/24\n• 2025.08.24\n\n📝 如果不指定日期，将默认生成今天的日记")
                     return False, "日期格式错误", True
                 
-                await self.send_text(f"🔄 正在生成 {date} 的日记...")
+
+                if not self.get_config("diary_generation.enable_syle_send", False):
+                    await self.send_text("我正在写 {date} 的日记...")
+                else:
+                    await self.send_text("等下")
+                    await style_send(self.message.chat_stream, f"我正在写 {date} 的日记...", self.send_text)
                 
                 # 直接获取所有消息，忽略黑白名单配置
                 try:
@@ -988,29 +1044,21 @@ class DiaryManageCommand(BaseCommand):
                         await self.send_text(f"❌ {date} {context_desc} 消息数量不足({len(messages)}条),无法生成日记")
                         return False, "消息数量不足", True
                     
-                    # 创建日记生成器
-                    diary_action = DiaryGeneratorAction(
-                        action_data={"date": date, "target_chats": [], "is_manual": True},
-                        reasoning="手动生成日记",
-                        cycle_timers={},
-                        thinking_id="manual_diary",
-                        chat_stream=self.message.chat_stream,
-                        log_prefix="[DiaryManage]",
-                        plugin_config=self.plugin_config,
-                        action_message=None
-                    )
-                    
-                    # 使用50k强制截断生成日记
-                    success, result = await self._generate_diary_with_50k_limit(diary_action, date, messages)
-                    
+                    # 使用共享服务生成与发布
+                    service = DiaryService(plugin_config=self.plugin_config)
+                    success, result = await service.generate_diary_from_messages(date, messages, force_50k=True)
                     if success:
-                        await self.send_text(f"✅ 日记生成成功！\n\n📖 {date}:\n{result}")
-                        
-                        await self.send_text("📱 正在发布到QQ空间...")
-                        qzone_success = await diary_action._publish_to_qzone(result, date)
-                        
+                        if not self.get_config("diary_generation.enable_syle_send", False):
+                            await self.send_text("日记生成成功！正在发布到QQ空间\n{date}:\n{result}")
+                        else:
+                            await style_send(self.message.chat_stream, f"日记生成成功！正在发布到QQ空间", self.send_text)
+                            await self.send_text(f"{date}:\n{result}")
+                        qzone_success = await service.publish_to_qzone(date, result)
                         if qzone_success:
-                            await self.send_text("🎉 已成功发布到QQ空间！")
+                            if not self.get_config("diary_generation.enable_syle_send", False):
+                                await self.send_text("已成功发布到QQ空间！")
+                            else:
+                                await style_send(self.message.chat_stream, "已成功发布到QQ空间！", self.send_text)
                         else:
                             await self.send_text("⚠️ QQ空间发布失败,可能原因:\n1. Napcat服务未启动\n2. 端口配置错误\n3. QQ空间权限问题\n4. Bot账号配置错误")
                     else:

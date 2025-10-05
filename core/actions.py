@@ -43,7 +43,8 @@ from src.plugin_system.apis import (
 )
 
 from .storage import DiaryStorage, DiaryQzoneAPI
-from .utils import ChatIdResolver, DiaryConstants
+from .utils import ChatIdResolver, DiaryConstants, get_bot_personality
+from .diary_service import DiaryService
 
 logger = get_logger("diary_actions")
 
@@ -345,39 +346,8 @@ class DiaryGeneratorAction(BaseAction):
         super().__init__(*args, **kwargs)
         self.storage = DiaryStorage()
         self.qzone_api = DiaryQzoneAPI()
+        self.diary_service = DiaryService(plugin_config=self.plugin_config)
         self.chat_resolver = ChatIdResolver()
-    
-    async def get_bot_personality(self) -> Dict[str, str]:
-        """
-        实时获取bot人设信息
-        
-        从全局配置中获取Bot的人格设置，用于生成个性化的日记内容。
-        适配MaiBot 0.10.2版本的新配置项结构。
-        
-        Returns:
-            Dict[str, str]: 包含Bot人设信息的字典，包含以下键：
-                - core: 核心人设描述
-                - side: 情感特征/人设补充
-                - style: 回复风格
-                - interest: 兴趣爱好
-        
-        Examples:
-            >>> personality = await action.get_bot_personality()
-            >>> print(personality['core'])  # "是一个活泼可爱的AI助手"
-            >>> print(personality['style'])  # "温和友善，偶尔调皮"
-        """
-        # 适配0.10.2版本的新配置项结构
-        personality = config_api.get_global_config("personality.personality", "是一个机器人助手")
-        reply_style = config_api.get_global_config("personality.reply_style", "")
-        emotion_style = config_api.get_global_config("personality.emotion_style", "")
-        interest = config_api.get_global_config("personality.interest", "")
-        
-        return {
-            "core": personality,
-            "side": emotion_style,  # 将情感特征作为人设补充
-            "style": reply_style,
-            "interest": interest
-        }
 
     async def get_daily_messages(self, date: str, target_chats: List[str] = None, end_hour: int = None, end_minute: int = None) -> List[Any]:
         """
@@ -997,140 +967,28 @@ class DiaryGeneratorAction(BaseAction):
         """
         try:
             # 1. 获取bot人设
-            personality = await self.get_bot_personality()
+            personality = await get_bot_personality()
             # 2. 获取当天消息（使用内置API）
             messages = await self.get_daily_messages(date, target_chats)
             
             if len(messages) < self.get_config("diary_generation.min_message_count", DiaryConstants.MIN_MESSAGE_COUNT):
                 return False, f"当天消息数量不足({len(messages)}条),无法生成日记"
             
-            # 3. 构建时间线
-            timeline = self.build_chat_timeline(messages)
-            
-            # 4. 生成天气信息
-            weather = self.get_weather_by_emotion(messages)
-            date_with_weather = self.get_date_with_weather(date, weather)
-            
-            # 5. 生成prompt
-            target_length = self.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
-            
-            # 构建完整的人设描述
-            personality_desc = personality['core']
-            if personality.get('side'):
-                personality_desc += f"，{personality['side']}"
-            
-            # 构建兴趣描述
-            interest_desc = ""
-            if personality.get('interest'):
-                interest_desc = f"\n我的兴趣爱好:{personality['interest']}"
-            
-            prompt = f"""我是{personality_desc}
-我平时说话的风格是:{personality['style']}{interest_desc}
-
-今天是{date},基于以下聊天记录写日记:
-{timeline}
-
-现在我要写一篇{target_length}字左右的日记,记录今天聊天中的感受:
-1. 开头必须是日期和天气:{date_with_weather}
-2. 像睡前随手写的感觉,轻松自然
-3. 基于聊天记录中的对话内容,加入我的真实感受
-4. 只记录聊天记录中体现的事件和对话,不要推测未发生的内容
-5. 可以吐槽、感慨,体现我的个性
-6. 如果有有趣的事就重点写,平淡的一天就简单记录
-7. 偶尔加一两句小总结或感想
-8. 不要写成流水账,要有重点和感情色彩
-9. 用第一人称"我"来写
-10. 结合我的兴趣爱好,对相关话题可以多写一些感想
-
-我的日记:"""
-
-            # 6. 根据配置选择模型生成
-            use_custom_model = self.get_config("custom_model.use_custom_model", False)
-            logger.debug(f"模型选择: use_custom_model={use_custom_model}")
-            
-            if use_custom_model:
-                model_name = self.get_config("custom_model.model_name", "未知模型")
-                logger.info(f"调用自定义模型: {model_name}")
-                # 使用自定义模型（支持用户设置的上下文长度）
-                max_context_k = self.get_config("custom_model.max_context_tokens", 256)
-                # 验证上下文长度是否在合理范围内（1-10000k，即10M tokens）
-                if not (1 <= max_context_k <= 10000):
-                    logger.info(f"上下文长度配置不合理: {max_context_k}k，将使用默认值")
-                    max_context_k = 256
-                max_context_tokens = (max_context_k * 1000) - 2000  # 预留2k tokens用于系统提示和响应
-                
-                current_tokens = self._estimate_tokens(timeline)
-                if current_tokens > max_context_tokens:
-                    logger.debug(f"自定义模型:聊天记录超过{max_context_k}k tokens,进行截断")
-                    truncated_timeline = self._truncate_messages(timeline, max_context_tokens)
-                    prompt = prompt.replace(timeline, truncated_timeline)
-                # 直接调用自定义模型生成，避免递归
-                try:
-                    api_key = self.get_config("custom_model.api_key", "")
-                    if not api_key or api_key == "sk-your-siliconflow-key-here":
-                        success, diary_content = False, "自定义模型API密钥未配置"
-                    else:
-                        # 创建OpenAI客户端
-                        client = AsyncOpenAI(
-                            base_url=self.get_config("custom_model.api_url", "https://api.siliconflow.cn/v1"),
-                            api_key=api_key
-                        )
-                        
-                        # 获取并验证API超时配置（1-6000秒，即100分钟）
-                        api_timeout = self.get_config("custom_model.api_timeout", 300)
-                        if not (1 <= api_timeout <= 6000):
-                            logger.info(f"API超时配置不合理: {api_timeout}秒，将使用默认值")
-                            api_timeout = 300
-                        
-                        # 调用模型
-                        completion = await client.chat.completions.create(
-                            model=self.get_config("custom_model.model_name", "Pro/deepseek-ai/DeepSeek-V3"),
-                            messages=[{"role": "user", "content": prompt}],
-                            temperature=self.get_config("custom_model.temperature", 0.7),
-                            timeout=api_timeout
-                        )
-                        
-                        if completion.choices and len(completion.choices) > 0:
-                            content = completion.choices[0].message.content
-                        else:
-                            raise RuntimeError("模型返回的响应为空或格式错误")
-                        logger.info(f"自定义模型调用成功: {self.get_config('custom_model.model_name')}")
-                        success, diary_content = True, content
-                        
-                except Exception as e:
-                    logger.error(f"自定义模型调用失败: {e}")
-                    success, diary_content = False, f"自定义模型调用出错: {str(e)}"
-            else:
-                logger.info("调用系统默认模型")
-                # 使用默认模型（强制50k截断）
-                success, diary_content = await self.generate_with_default_model(prompt, timeline)
+            # 由共享服务负责完整生成逻辑（含token截断/模型选择/保存）
+            success, diary_content = await self.diary_service.generate_diary_from_messages(date, messages, force_50k=True)
             
             if not success or not diary_content:
                 return False, diary_content or "模型生成日记失败"
             
-            # 7. 字数控制
-            max_length = self.get_config("qzone_publishing.qzone_word_count", DiaryConstants.DEFAULT_QZONE_WORD_COUNT)
+            # 7. 字数控制：仅使用最大上限
+            max_length = self.get_config("qzone_publishing.qzone_max_word_count", 350)
+            if not isinstance(max_length, int):
+                max_length = 350
             if max_length > DiaryConstants.MAX_DIARY_LENGTH:
                 max_length = DiaryConstants.MAX_DIARY_LENGTH
             if len(diary_content) > max_length:
                 diary_content = self.smart_truncate(diary_content, max_length)
             
-            # 8. 保存到JSON文件（精简结构）
-            diary_record = {
-                "date": date,
-                "diary_content": diary_content,
-                "word_count": len(diary_content),
-                "generation_time": time.time(),
-                "weather": weather,
-                "bot_messages": getattr(self, '_timeline_stats', {}).get('bot_messages', 0),
-                "user_messages": getattr(self, '_timeline_stats', {}).get('user_messages', 0),
-                "is_published_qzone": False,
-                "qzone_publish_time": None,
-                "status": "生成成功",
-                "error_message": ""
-            }
-            
-            await self.storage.save_diary(diary_record)
             return True, diary_content
             
         except Exception as e:

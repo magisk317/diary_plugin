@@ -11,7 +11,7 @@
 
 ## ⚠️ 重要注意事项
 
-- **Bot配置要求**：请确保MaiBot配置文件 `bot_config.toml` 的`qq_account`(bot的qq号)填写正确，该QQ号用于QQ空间发布和消息查询功能，配置错误会导致功能异常。
+- **Bot配置要求**：请确保MaiBot配置文件 `bot_config.toml` 的`qq_account`(bot的qq号)填写正确，该QQ号用于消息查询功能，配置错误会导致功能异常。
 - **Bot昵称设置**：`nickname`(bot的名字)可以自由更换，不影响插件功能。
 
 
@@ -73,9 +73,9 @@ pip install httpx pytz openai
 - **私聊内**：回复"❌ 您没有权限使用此命令。"
 
 ```bash
-# 生成日记（自动发布到QQ空间）（管理员专用）
-/diary generate              # 生成今天的日记并发布到QQ空间
-/diary generate 2025-08-24   # 生成指定日期的日记并发布
+# 生成日记（管理员专用）
+/diary generate              # 生成今天的日记
+/diary generate 2025-08-24   # 生成指定日期的日记
 
 # 日记概览（管理员专用）
 /diary list                  # 显示日记概览（统计 + 最近10篇）
@@ -134,48 +134,6 @@ enable_emotion_analysis = true
 2. 再检查剩余群组消息的总数是否满足 `min_message_count`
 3. 两个条件都满足才会生成日记
 
-
-
-
-
-### QQ空间发布配置 [qzone_publishing]
-
-```toml
-[qzone_publishing]
-qzone_word_count = 300
-napcat_host = "127.0.0.1"
-napcat_port = "9998"
-```
-
-- `qzone_word_count`：QQ空间说说的字数限制，范围20-8000字，超过会自动截断
-- `napcat_host`：Napcat服务地址
-- `napcat_port`：Napcat服务端口
-
-**Napcat配置要求**：
-1. 在napcat的webui中新建**http服务器**
-2. host填**127.0.0.1**，port填**9998**
-3. 启用**CORS和Websocket**
-
-
-
-**Docker用户特别说明**：
-
-> [!WARNING]
-> **Docker环境限制**：目前存在问题，发送空间相关无法正常运行。
-
-如果您使用Docker部署：
-
-**配置方法**：
-1. 将napcat创建的`http server`中的`host`改为`core`或者`0.0.0.0（不推荐）`
-2. 将本插件的config.toml中的`napcat_host`值写为`napcat`
-3. 确保Docker网络配置正确，napcat容器能与MaiBot容器通信
-
-**已知限制**：
-- ⚠️ **QQ空间发布功能异常**：Docker环境下无法正常获取QQ空间cookies。
-- ⚠️ **定时任务功能异常**：定时是直接将日记发送到空间的，所以也无法正常工作。
-- ✅ **日记生成功能完全正常**：不影响日记内容生成和本地存储（可以通过指令生成本地日记）。
-
-**可以尝试使用空间插件提供的其它获取cookies的方式去手动获取、生成。（在文档最后有空间插件地址）**
 
 
 
@@ -275,7 +233,7 @@ target_chats = ["group:999999"]
 - 模型配置（默认/自定义）
 - 模型调用信息（使用的具体模型）
 - 定时任务启动/禁用状态
-- 日记生成和QQ空间发布结果
+- 日记生成结果
 
 ### DEBUG级别（详细调试）
 - 配置读取详情
@@ -299,10 +257,6 @@ A: 确保QQ号已添加到admin_qqs配置中
 **Q: 日记生成失败，提示"消息数量不足"**
 
 A: 检查min_message_count和min_messages_per_chat配置，或当天确实聊天较少
-
-**Q: QQ空间发布失败**
-
-A: 检查Napcat服务是否运行，端口配置是否正确
 
 **Q: 自定义模型返回400错误**
 
@@ -331,6 +285,6 @@ A: 聊天记录过多导致处理时间过长，建议：
 
 ## 🙏 鸣谢
 
-部分重要代码来自空间插件：https://github.com/internetsb/Maizone
+感谢 [internetsb](https://github.com/internetsb) 、[何夕](https://github.com/Heximiao) 提供的帮助。
 
-感谢 [internetsb（空间插件作者）](https://github.com/internetsb) 、[何夕](https://github.com/Heximiao) 提供的帮助。
+部分代码参考了项目：https://github.com/internetsb/Maizone

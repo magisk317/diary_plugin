@@ -11,9 +11,9 @@
   "host_application": {
     "min_version": "0.10.2"
   },
-  "homepage_url": "https://github.com/bockegai/diary_plugin",
-  "repository_url": "https://github.com/bockegai/diary_plugin",
-  "keywords": ["日记", "记录", "回忆", "QQ空间"],
+  "homepage_url": "https://github.com/magisk317/diary_plugin",
+  "repository_url": "https://github.com/magisk317/diary_plugin",
+  "keywords": ["日记", "记录", "回忆"],
   "categories": ["效率工具", "社交"],
   "default_locale": "zh-CN",
   "locales_path": "_locales"

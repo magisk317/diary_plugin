@@ -273,13 +273,13 @@ class DiaryScheduler:
 
     async def _generate_daily_diary(self):
         """
-        生成每日日记
+        生成每日日记并发送到配置的群组
         
         定时任务的核心执行方法，创建日记生成Action并执行。
-        完全静默运行，不发送任何消息到聊天，只记录日志。
+        生成成功后会将日记发送到配置的目标群组。
         
         Note:
-            使用MockChatStream作为虚拟聊天流，避免定时任务中的消息发送
+            根据 schedule.target_chats 配置发送日记到指定群组
         """
         try:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -291,7 +291,7 @@ class DiaryScheduler:
                 thinking_id="scheduled_diary",
                 chat_stream=MockChatStream(),
                 log_prefix="[ScheduledDiary]",
-                plugin_config=self.plugin.config,  # 传递完整配置
+                plugin_config=self.plugin.config,
                 action_message=None
             )
             
@@ -299,8 +299,66 @@ class DiaryScheduler:
             
             if success:
                 self.logger.info(f"定时日记生成成功: {today} ({len(result)}字)")
+                
+                # 发送日记到配置的群组
+                await self._send_diary_to_groups(today, result)
             else:
                 self.logger.error(f"定时日记生成失败: {today} - {result}")
                 
         except Exception as e:
             self.logger.error(f"定时生成日记出错: {e}")
+    
+    async def _send_diary_to_groups(self, date: str, diary_content: str):
+        """
+        发送日记到配置的目标群组
+        
+        Args:
+            date (str): 日记日期
+            diary_content (str): 日记内容
+        """
+        try:
+            from src.plugin_system.apis import message_api, chat_api
+            
+            # 获取目标群组配置
+            target_chats = self.plugin.get_config("schedule.target_chats", [])
+            filter_mode = self.plugin.get_config("schedule.filter_mode", "whitelist")
+            
+            if not target_chats:
+                self.logger.debug("未配置目标群组，跳过发送")
+                return
+            
+            # 解析群组ID
+            group_ids = []
+            for chat in target_chats:
+                if chat.startswith("group:"):
+                    group_ids.append(chat[6:])  # 去掉 "group:" 前缀
+            
+            if not group_ids:
+                self.logger.debug("未配置群组，跳过发送")
+                return
+            
+            # 构建消息内容
+            message = f"📅 {date} 的日记\n\n{diary_content}"
+            
+            # 发送到每个群组
+            success_count = 0
+            for group_id in group_ids:
+                try:
+                    # 获取群聊流
+                    stream = chat_api.get_stream_by_group_id(group_id)
+                    if stream:
+                        await message_api.send_message(stream.stream_id, message)
+                        success_count += 1
+                        self.logger.info(f"日记已发送到群组: {group_id}")
+                    else:
+                        self.logger.warning(f"无法获取群组流: {group_id}")
+                except Exception as e:
+                    self.logger.error(f"发送日记到群组 {group_id} 失败: {e}")
+            
+            if success_count > 0:
+                self.logger.info(f"日记发送完成: 成功 {success_count}/{len(group_ids)} 个群组")
+            else:
+                self.logger.warning("日记发送失败: 所有群组均未成功")
+                
+        except Exception as e:
+            self.logger.error(f"发送日记到群组出错: {e}")

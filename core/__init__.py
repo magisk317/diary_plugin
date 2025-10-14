@@ -19,7 +19,7 @@ from .actions import DiaryGeneratorAction
 from .scheduler import DiaryScheduler, EmotionAnalysisTool
 from .commands import DiaryManageCommand
 from .image_processor import ImageProcessor, ImageData
-from .utils import ChatIdResolver, DiaryConstants, MockChatStream, format_date_str
+from .utils import ChatIdResolver, DiaryConstants, MockChatStream, MockMessage, format_date_str
 
 # 定义公开的API接口
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     'ChatIdResolver',
     'DiaryConstants',
     'MockChatStream',
+    'MockMessage',
     'format_date_str',
     'EmotionAnalysisTool',
 ]

@@ -136,8 +136,13 @@ class OptimizedMessageFetcher:
         """判断是否为私聊消息"""
         # 检查消息是否没有群组ID
         try:
+            # 调试日志
+            if msg is None:
+                logger.warning("[_is_private_message] 消息对象为None!")
+                return True
+            
             # 检查chat_info中的group_id
-            if hasattr(msg, 'chat_info') and hasattr(msg.chat_info, 'group_id'):
+            if hasattr(msg, 'chat_info') and msg.chat_info is not None and hasattr(msg.chat_info, 'group_id'):
                 group_id = msg.chat_info.group_id
                 return not group_id or group_id.strip() == ""
             

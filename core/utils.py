@@ -144,6 +144,34 @@ class DiaryConstants:
     DEFAULT_WORD_COUNT = 300
 
 
+class MockUserInfo:
+    """虚拟用户信息类"""
+    def __init__(self):
+        self.user_id = "scheduled_task"  # BaseAction会访问user_id
+        self.user_nickname = "定时任务"
+
+
+class MockChatInfo:
+    """虚拟聊天信息类，用于MockMessage"""
+    def __init__(self):
+        self.group_info = None  # BaseAction会检查这个属性
+
+
+class MockMessage:
+    """
+    虚拟消息类
+    
+    用于定时任务中的Action初始化，提供一个模拟的消息对象。
+    BaseAction的__init__会访问:
+    - action_message.chat_info.group_info
+    - action_message.user_info.user_id
+    因此需要提供完整的结构。
+    """
+    def __init__(self):
+        self.chat_info = MockChatInfo()
+        self.user_info = MockUserInfo()
+
+
 class MockChatStream:
     """
     虚拟聊天流类
@@ -169,6 +197,7 @@ class MockChatStream:
         self.platform = "qq"
         self.group_info = None
         self.user_info = None
+        self.chat_info = None  # 添加chat_info属性以兼容0.11.0版本
 
 
 class ChatIdResolver:

@@ -40,7 +40,23 @@ pip install httpx pytz openai
 
 ## 配置文件管理
 
-**重要说明**：插件现在支持自动生成配置文件，无需手动管理。
+### 首次使用配置
+
+1. **复制示例配置文件**：
+   ```bash
+   cp config.toml.example config.toml
+   ```
+
+2. **修改配置文件**：
+   - 编辑 `config.toml`
+   - 修改 `admin_qqs` 为你的 QQ 号
+   - 修改 `target_chats` 为你的群组
+   - 其他配置按需调整
+
+3. **隐私保护**：
+   - ✅ `config.toml` 已在 `.gitignore` 中，不会提交到 GitHub
+   - ✅ `config.toml.example` 是示例模板，可以安全提交
+   - ⚠️ 请勿将 `config.toml` 提交到公开仓库
 
 ### 配置文件生成流程
 

@@ -1,0 +1,99 @@
+# diary_plugin - 配置文件示例
+# 让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容(适配0.10.0及以上)
+# 配置版本: 2.2.4
+#
+# 使用说明：
+# 1. 复制此文件为 config.toml
+# 2. 修改下面的配置项为你的实际值
+# 3. config.toml 会被 .gitignore 忽略，不会提交到 GitHub
+
+# 插件基础配置
+[plugin]
+
+# 是否启用插件
+enabled = true
+
+# 配置文件版本
+config_version = "2.2.4"
+
+# 管理员QQ号列表,用于使用测试命令 (示例:[111,222])
+# ⚠️ 请修改为你的QQ号
+admin_qqs = []
+
+# 是否注册并启用 DiaryGeneratorAction
+enable_action = true
+
+# 是否注册并启用 EmotionAnalysisTool
+enable_tool = true
+
+# 是否注册并启用 DiaryManageCommand
+enable_command = true
+
+
+# 日记生成相关配置
+[diary_generation]
+
+# 生成日记所需的最少消息总数
+min_message_count = 3
+
+# 单个群组聊天条数少于此值时该群组消息不参与日记生成
+min_messages_per_chat = 3
+
+# 生成样式: diary | custom
+style = "diary"
+
+# 当 style=custom 时使用的模板。可用占位符: {date},{timeline},{date_with_weather},{target_length},{personality_desc},{style},{interest},{name}
+custom_prompt = ""
+
+# 是否开启回复改写
+enable_syle_send = false
+
+
+# 自定义模型配置（仅支持OpenAI格式）
+[custom_model]
+
+# 自定义模型（不启用则默认使用系统首要回复模型）
+use_custom_model = false
+
+# 仅支持OpenAI API格式的模型服务,不支持Google Gemini、Anthropic Claude等原生格式
+# 推荐使用的站点: http://rinkoai.com/pricing
+# 咨询答疑群: 1054544611
+api_url = "http://rinkoai.com/v1"
+
+# API密钥
+api_key = "your-rinko-key-here"
+
+# 模型名称
+model_name = "Pro/deepseek-ai/DeepSeek-V3"
+
+# 生成温度
+temperature = 0.7
+
+# API调用超时时间（秒），大量聊天记录时建议设置更长时间
+api_timeout = 300
+
+# 模型上下文长度（单位：k）,填写模型的真实上限
+max_context_tokens = 256
+
+
+# 定时任务配置
+[schedule]
+
+# 每日生成日记的时间 (HH:MM格式)
+schedule_time = "23:30"
+
+# 时区设置
+timezone = "Asia/Shanghai"
+
+# 过滤模式，可选值：whitelist(白名单), blacklist(黑名单)
+filter_mode = "whitelist"
+
+# 目标列表，格式：["group:群号", "private:用户qq号"]
+# 示例：["group:123456789", "private:987654321"]
+# ⚠️ 请修改为你的实际群号
+# 白名单模式：空列表=禁用定时任务，有内容=只处理列表中的聊天
+# 黑名单模式：空列表=处理全部聊天，有内容=处理除列表外的聊天
+target_chats = []
+
+
+

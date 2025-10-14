@@ -6,7 +6,6 @@
 - 根据Bot人设和聊天内容生成个性化日记
 - 支持自定义模型和默认模型两种生成方式
 - 处理Token限制和消息截断逻辑
-- 集成QQ空间发布功能
 
 该模块设计为独立的Action组件，可以被定时任务、手动命令等多种方式调用，
 提供了完整的日记生成工作流程。
@@ -15,7 +14,6 @@ Dependencies:
     - src.plugin_system: 插件系统基础组件
     - src.plugin_system.apis: 内置API接口
     - .storage: 日记存储模块
-    - .qzone: QQ空间API模块
     - .resolver: 聊天ID解析模块
 
 Author: MaiBot Diary Plugin
@@ -42,7 +40,7 @@ from src.plugin_system.apis import (
     get_logger
 )
 
-from .storage import DiaryStorage, DiaryQzoneAPI
+from .storage import DiaryStorage
 from .utils import ChatIdResolver, DiaryConstants, get_bot_personality
 from .diary_service import DiaryService
 
@@ -282,7 +280,6 @@ class DiaryGeneratorAction(BaseAction):
     - 根据Bot人设生成个性化的日记内容
     - 支持情感分析和天气生成
     - 自动处理Token限制和消息截断
-    - 集成QQ空间自动发布功能
     
     技术特性：
     - 支持自定义模型和系统默认模型两种生成方式
@@ -298,7 +295,6 @@ class DiaryGeneratorAction(BaseAction):
     配置依赖：
     - diary_generation.*: 日记生成相关配置
     - custom_model.*: 自定义模型配置
-    - qzone_publishing.*: QQ空间发布配置
     - schedule.*: 定时任务配置
     
     Examples:
@@ -324,7 +320,7 @@ class DiaryGeneratorAction(BaseAction):
     Note:
         该类继承自BaseAction，遵循MaiBot插件系统的Action规范。
         所有的配置获取都通过self.get_config()方法进行，确保配置的一致性。
-        日记生成过程中会自动保存到本地存储，并可选择发布到QQ空间。
+        日记生成过程中会自动保存到本地存储。
     """
     
     action_name = "diary_generator"
@@ -345,7 +341,6 @@ class DiaryGeneratorAction(BaseAction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.storage = DiaryStorage()
-        self.qzone_api = DiaryQzoneAPI()
         self.diary_service = DiaryService(plugin_config=self.plugin_config)
         self.chat_resolver = ChatIdResolver()
 
@@ -876,58 +871,6 @@ class DiaryGeneratorAction(BaseAction):
             logger.error(f"默认模型调用失败: {e}")
             return False, f"默认模型调用出错: {str(e)}"
 
-    async def _publish_to_qzone(self, diary_content: str, date: str) -> bool:
-        """
-        发布日记到QQ空间
-        
-        将生成的日记内容发布到QQ空间，并更新本地存储的发布状态。
-        
-        Args:
-            diary_content (str): 要发布的日记内容
-            date (str): 日记日期
-        
-        Returns:
-            bool: 发布是否成功
-        
-        Note:
-            - 需要配置Napcat服务的主机和端口
-            - 发布结果会更新到本地存储中
-            - 失败时会记录详细的错误信息
-        """
-        try:
-            napcat_host = self.get_config("qzone_publishing.napcat_host", "127.0.0.1")
-            napcat_port = self.get_config("qzone_publishing.napcat_port", "9998")
-            napcat_token = self.get_config("qzone_publishing.napcat_token", "")
-            success = await self.qzone_api.publish_diary(diary_content, napcat_host, napcat_port, napcat_token)
-            
-            diary_data = await self.storage.get_diary(date)
-            if diary_data:
-                if success:
-                    diary_data["is_published_qzone"] = True
-                    diary_data["qzone_publish_time"] = time.time()
-                    diary_data["status"] = "一切正常"
-                    diary_data["error_message"] = ""
-                else:
-                    diary_data["is_published_qzone"] = False
-                    diary_data["status"] = "报错:发说说失败"
-                    diary_data["error_message"] = "原因:QQ空间发布失败,可能是cookie过期或网络问题"
-                
-                await self.storage.save_diary(diary_data)
-            
-            return success
-                
-        except Exception as e:
-            logger.error(f"发布QQ空间失败: {e}")
-            
-            diary_data = await self.storage.get_diary(date)
-            if diary_data:
-                diary_data["is_published_qzone"] = False
-                diary_data["status"] = "报错:发说说失败"
-                diary_data["error_message"] = f"原因:发布异常 - {str(e)}"
-                await self.storage.save_diary(diary_data)
-            
-            return False
-
     async def generate_diary(self, date: str, target_chats: List[str] = None) -> Tuple[bool, str]:
         """
         生成日记的核心逻辑（使用内置API）
@@ -980,15 +923,6 @@ class DiaryGeneratorAction(BaseAction):
             if not success or not diary_content:
                 return False, diary_content or "模型生成日记失败"
             
-            # 7. 字数控制：仅使用最大上限
-            max_length = self.get_config("qzone_publishing.qzone_max_word_count", 350)
-            if not isinstance(max_length, int):
-                max_length = 350
-            if max_length > DiaryConstants.MAX_DIARY_LENGTH:
-                max_length = DiaryConstants.MAX_DIARY_LENGTH
-            if len(diary_content) > max_length:
-                diary_content = self.smart_truncate(diary_content, max_length)
-            
             return True, diary_content
             
         except Exception as e:
@@ -1002,8 +936,6 @@ class DiaryGeneratorAction(BaseAction):
                     "weather": "阴",
                     "bot_messages": 0,
                     "user_messages": 0,
-                    "is_published_qzone": False,
-                    "qzone_publish_time": None,
                     "status": "报错:生成失败",
                     "error_message": f"原因:{str(e)}"
                 }

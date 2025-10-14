@@ -135,13 +135,13 @@ class DiaryConstants:
         TOKEN_LIMIT_50K (int): 50K token限制
         TOKEN_LIMIT_126K (int): 126K token限制  
         MAX_DIARY_LENGTH (int): 日记最大长度限制
-        DEFAULT_QZONE_WORD_COUNT (int): QQ空间默认字数
+        DEFAULT_WORD_COUNT (int): 默认字数
     """
     MIN_MESSAGE_COUNT = 3
     TOKEN_LIMIT_50K = 50000
     TOKEN_LIMIT_126K = 126000
     MAX_DIARY_LENGTH = 8000
-    DEFAULT_QZONE_WORD_COUNT = 300
+    DEFAULT_WORD_COUNT = 300
 
 
 class MockChatStream:

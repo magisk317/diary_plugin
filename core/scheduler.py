@@ -128,7 +128,7 @@ class DiaryScheduler:
     日记定时任务调度器类
     
     负责管理日记插件的定时任务，包括任务的启动、停止和执行。
-    根据配置的时间自动生成每日日记，并处理QQ空间发布等后续操作。
+    根据配置的时间自动生成每日日记。
     
     该调度器支持时区配置，能够根据不同的过滤模式（白名单/黑名单）
     来决定是否启动定时任务，并在配置的时间点自动执行日记生成。
@@ -278,8 +278,6 @@ class DiaryScheduler:
         定时任务的核心执行方法，创建日记生成Action并执行。
         完全静默运行，不发送任何消息到聊天，只记录日志。
         
-        生成成功后会自动尝试发布到QQ空间，并记录执行结果。
-        
         Note:
             使用MockChatStream作为虚拟聊天流，避免定时任务中的消息发送
         """
@@ -300,12 +298,7 @@ class DiaryScheduler:
             success, result = await diary_action.generate_diary(today)
             
             if success:
-                qzone_success = await diary_action._publish_to_qzone(result, today)
-                if qzone_success:
-                    self.logger.info(f"定时日记生成成功: {today} ({len(result)}字) - QQ空间发布成功")
-                else:
-                    self.logger.info(f"定时日记生成成功: {today} ({len(result)}字) - QQ空间发布失败")
-                    
+                self.logger.info(f"定时日记生成成功: {today} ({len(result)}字)")
             else:
                 self.logger.error(f"定时日记生成失败: {today} - {result}")
                 

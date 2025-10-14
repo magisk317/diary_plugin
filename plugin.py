@@ -66,7 +66,6 @@ class DiaryPlugin(BasePlugin):
     配置结构：
     - plugin: 插件基础配置
     - diary_generation: 日记生成相关配置
-    - qzone_publishing: QQ空间发布配置
     - custom_model: 自定义模型配置
     - schedule: 定时任务配置
     
@@ -91,7 +90,6 @@ class DiaryPlugin(BasePlugin):
     config_section_descriptions = {
         "plugin": "插件基础配置",
         "diary_generation": "日记生成相关配置",
-        "qzone_publishing": "QQ空间发布配置",
         "custom_model": "自定义模型配置（仅支持OpenAI格式）",
         "schedule": "定时任务配置"
     }
@@ -111,21 +109,13 @@ class DiaryPlugin(BasePlugin):
             "_section_description": "\n# 日记生成相关配置",
             "min_message_count": ConfigField(type=int, default=3, description="生成日记所需的最少消息总数"),
             "min_messages_per_chat": ConfigField(type=int, default=3, description="单个群组聊天条数少于此值时该群组消息不参与日记生成"),
-            "style": ConfigField(type=str, default="diary", description="生成样式: diary | qqzone | custom"),
+            "style": ConfigField(type=str, default="diary", description="生成样式: diary | custom"),
             "custom_prompt": ConfigField(
                 type=str,
                 default="",
                 description="当 style=custom 时使用的模板。可用占位符: {date},{timeline},{date_with_weather},{target_length},{personality_desc},{style},{interest},{name}"
             ),
             "enable_syle_send": ConfigField(type=bool, default=False, description="是否开启回复改写")
-        },
-        "qzone_publishing": {
-            "_section_description": "\n# QQ空间发布配置",
-            "qzone_min_word_count": ConfigField(type=int, default=150, description="最小字数，范围20-8000"),
-            "qzone_max_word_count": ConfigField(type=int, default=350, description="最大字数，范围20-8000，必须≥最小值"),
-            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat服务地址,Docker环境可使用'napcat'"),
-            "napcat_port": ConfigField(type=str, default="9998", description="Napcat服务端口"),
-            "napcat_token": ConfigField(type=str, default="", description="Napcat服务认证Token,在Napcat WebUI的网络配置中设置,为空则不使用token")
         },
         "custom_model": {
             "_section_description": "\n# 自定义模型配置",
@@ -197,13 +187,6 @@ class DiaryPlugin(BasePlugin):
                     self.logger.info(f"黑名单模式: 排除{len(target_chats)}个聊天,定时任务将启动")
                 else:
                     self.logger.info("黑名单模式: 无排除列表,处理全部聊天,定时任务将启动")
-            
-            # 显示Napcat token配置状态
-            napcat_token = self.get_config("qzone_publishing.napcat_token", "")
-            if napcat_token:
-                self.logger.info("Napcat Token已配置,QQ空间发布功能启用安全验证")
-            else:
-                self.logger.info("Napcat Token未配置,将使用无Token模式连接")
             
             # 显示模型配置
             if use_custom_model:

@@ -253,8 +253,6 @@ class DiaryManageCommand(BaseCommand):
             Dict[str, Any]: 包含本周统计数据的字典，包含以下字段：
                 - total_count (int): 本周日记总数
                 - avg_words (int): 本周平均字数
-                - success_count (int): 本周成功发布数
-                - success_rate (float): 本周发布成功率
                 - trend (str): 与上周对比的趋势描述
         
         Note:
@@ -287,8 +285,6 @@ class DiaryManageCommand(BaseCommand):
             this_week_count = len(this_week_diaries)
             this_week_words = sum(diary.get("word_count", 0) for diary in this_week_diaries)
             this_week_avg = this_week_words // this_week_count if this_week_count > 0 else 0
-            this_week_success = sum(1 for diary in this_week_diaries if diary.get("is_published_qzone", False))
-            this_week_success_rate = (this_week_success / this_week_count * 100) if this_week_count > 0 else 0
             
             # 计算上周统计
             last_week_count = len(last_week_diaries)
@@ -310,8 +306,6 @@ class DiaryManageCommand(BaseCommand):
             return {
                 "total_count": this_week_count,
                 "avg_words": this_week_avg,
-                "success_count": this_week_success,
-                "success_rate": this_week_success_rate,
                 "trend": trend
             }
         except Exception as e:
@@ -319,8 +313,6 @@ class DiaryManageCommand(BaseCommand):
             return {
                 "total_count": 0,
                 "avg_words": 0,
-                "success_count": 0,
-                "success_rate": 0,
                 "trend": "计算失败"
             }
 
@@ -761,7 +753,7 @@ class DiaryManageCommand(BaseCommand):
             content = diary.get("diary_content", "")
             word_count = diary.get("word_count", 0)
             gen_time = datetime.datetime.fromtimestamp(diary.get("generation_time", 0))
-            status = "✅已发布" if diary.get("is_published_qzone", False) else "❌未发布"
+            status = "✅已生成"
             await self.send_text(
                 f"📖 {date} 日记 {index+1} ({gen_time.strftime('%H:%M')}) | {word_count}字 | {status}:\n\n{content}"
             )
@@ -780,7 +772,7 @@ class DiaryManageCommand(BaseCommand):
         for idx, diary in enumerate(diary_list, 1):
             gen_time = datetime.datetime.fromtimestamp(diary.get("generation_time", 0))
             word_count = diary.get("word_count", 0)
-            status = "✅已发布" if diary.get("is_published_qzone", False) else "❌未发布"
+            status = "✅已生成"
             diary_list_text.append(f"{idx}. {gen_time.strftime('%H:%M')} | {word_count}字 | {status}")
 
         await self.send_text(
@@ -828,20 +820,8 @@ class DiaryManageCommand(BaseCommand):
             date_with_weather = diary_action.get_date_with_weather(date, weather)
             
             # 5. 生成prompt
-            # 目标长度：仅[min,max]随机
-            min_wc = diary_action.get_config("qzone_publishing.qzone_min_word_count", 250)
-            max_wc = diary_action.get_config("qzone_publishing.qzone_max_word_count", 350)
-            if not isinstance(min_wc, int):
-                min_wc = 250
-            if not isinstance(max_wc, int):
-                max_wc = 350
-            if min_wc < 20:
-                min_wc = 20
-            if max_wc > DiaryConstants.MAX_DIARY_LENGTH:
-                max_wc = DiaryConstants.MAX_DIARY_LENGTH
-            if max_wc < min_wc:
-                max_wc = min_wc
-            target_length = random.randint(min_wc, max_wc)
+            # 目标长度
+            target_length = random.randint(250, 350)
             
             current_time = datetime.datetime.now()
             is_today = current_time.strftime("%Y-%m-%d") == date
@@ -877,14 +857,14 @@ class DiaryManageCommand(BaseCommand):
                         raise ValueError("empty custom prompt")
                 except Exception:
                     style = "diary"
-            if style == "qqzone":
+            if style == "diary":
                 prompt = f"""{personality_desc}
 我平时说话的风格是:{personality['style']}{interest_desc}
 
 今天是{date}，以下是我{time_desc}的一些聊天片段：
 {timeline}
 
-请用大约{target_length}字写一条适合QQ空间的说说：
+请用大约{target_length}字写一段日记：
 - 开头包含日期与天气：{date_with_weather}
 - 口语化、轻松自然，像随手发的感想
 - 有情绪和个性，不要写成流水账
@@ -922,12 +902,8 @@ class DiaryManageCommand(BaseCommand):
             if not success or not diary_content:
                 return False, diary_content or "模型生成日记失败"
             
-            # 7. 字数控制：仅使用最大上限
-            max_length = diary_action.get_config("qzone_publishing.qzone_max_word_count", 350)
-            if not isinstance(max_length, int):
-                max_length = 350
-            if max_length > DiaryConstants.MAX_DIARY_LENGTH:
-                max_length = DiaryConstants.MAX_DIARY_LENGTH
+            # 7. 字数控制
+            max_length = 350
             if len(diary_content) > max_length:
                 diary_content = diary_action.smart_truncate(diary_content, max_length)
             
@@ -940,8 +916,6 @@ class DiaryManageCommand(BaseCommand):
                 "weather": weather,
                 "bot_messages": getattr(diary_action, '_timeline_stats', {}).get('bot_messages', 0),
                 "user_messages": getattr(diary_action, '_timeline_stats', {}).get('user_messages', 0),
-                "is_published_qzone": False,
-                "qzone_publish_time": None,
                 "status": "生成成功",
                 "error_message": ""
             }
@@ -1044,23 +1018,15 @@ class DiaryManageCommand(BaseCommand):
                         await self.send_text(f"❌ {date} {context_desc} 消息数量不足({len(messages)}条),无法生成日记")
                         return False, "消息数量不足", True
                     
-                    # 使用共享服务生成与发布
+                    # 使用共享服务生成日记
                     service = DiaryService(plugin_config=self.plugin_config)
                     success, result = await service.generate_diary_from_messages(date, messages, force_50k=True)
                     if success:
                         if not self.get_config("diary_generation.enable_syle_send", False):
-                            await self.send_text("日记生成成功！正在发布到QQ空间\n{date}:\n{result}")
+                            await self.send_text(f"日记生成成功！\n{date}:\n{result}")
                         else:
-                            await style_send(self.message.chat_stream, f"日记生成成功！正在发布到QQ空间", self.send_text)
+                            await style_send(self.message.chat_stream, f"日记生成成功！", self.send_text)
                             await self.send_text(f"{date}:\n{result}")
-                        qzone_success = await service.publish_to_qzone(date, result)
-                        if qzone_success:
-                            if not self.get_config("diary_generation.enable_syle_send", False):
-                                await self.send_text("已成功发布到QQ空间！")
-                            else:
-                                await style_send(self.message.chat_stream, "已成功发布到QQ空间！", self.send_text)
-                        else:
-                            await self.send_text("⚠️ QQ空间发布失败,可能原因:\n1. Napcat服务未启动\n2. 端口配置错误\n3. QQ空间权限问题\n4. Bot账号配置错误")
                     else:
                         await self.send_text(f"❌ 生成失败:{result}")
                     return success, result, True
@@ -1081,10 +1047,6 @@ class DiaryManageCommand(BaseCommand):
                     diaries = await self.storage.list_diaries(limit=0)
                     
                     if diaries:
-                        # 计算发布统计
-                        success_count = sum(1 for diary in diaries if diary.get("is_published_qzone", False))
-                        failed_count = len(diaries) - success_count
-                        success_rate = (success_count / len(diaries) * 100) if diaries else 0
                         
                         # 计算日期范围
                         dates = [diary.get("date", "") for diary in diaries if diary.get("date")]
@@ -1114,13 +1076,11 @@ class DiaryManageCommand(BaseCommand):
 📖 总日记数: {stats['total_count']}篇
 📝 总字数: {stats['total_words']}字 (平均: {stats['avg_words']}字/篇)
 📅 日期范围: {date_range} ({len(set(dates))}天)
-📱 发布统计: {success_count}篇成功, {failed_count}篇失败 (成功率: {success_rate:.1f}%)
 🕐 最近生成: {latest_time.strftime('%Y-%m-%d %H:%M')}
 ⏰ 下次定时: {next_schedule}
 
 📈 趋势分析:
 📝 本周平均: {weekly_stats['avg_words']}字/篇 ({weekly_stats['trend']})
-📱 本周发布: {weekly_stats['success_count']}/{weekly_stats['total_count']}篇成功 ({weekly_stats['success_rate']:.0f}%)
 🔥 最长日记: {max_diary.get('date', '无')} ({max_diary.get('word_count', 0)}字)
 📏 最短日记: {min_diary.get('date', '无')} ({min_diary.get('word_count', 0)}字)"""
                         await self.send_text(stats_text)
@@ -1138,9 +1098,6 @@ class DiaryManageCommand(BaseCommand):
                         # 计算当天统计
                         total_words = sum(diary.get("word_count", 0) for diary in date_diaries)
                         avg_words = total_words // len(date_diaries) if date_diaries else 0
-                        success_count = sum(1 for diary in date_diaries if diary.get("is_published_qzone", False))
-                        failed_count = len(date_diaries) - success_count
-                        success_rate = (success_count / len(date_diaries) * 100) if date_diaries else 0
                         
                         # 生成时间信息
                         times = [datetime.datetime.fromtimestamp(diary.get("generation_time", 0)) for diary in date_diaries]
@@ -1152,7 +1109,7 @@ class DiaryManageCommand(BaseCommand):
                         for i, diary in enumerate(date_diaries, 1):
                             gen_time = datetime.datetime.fromtimestamp(diary.get("generation_time", 0))
                             word_count = diary.get("word_count", 0)
-                            status = "✅已发布" if diary.get("is_published_qzone", False) else "❌发布失败"
+                            status = "✅已生成"
                             diary_list.append(f"{i}. {gen_time.strftime('%H:%M')} ({word_count}字) {status}")
                         
                         date_text = f"""📅 {date} 日记概况:
@@ -1162,12 +1119,10 @@ class DiaryManageCommand(BaseCommand):
 
 📊 当天统计:
 📝 总字数: {total_words}字(平均: {avg_words}字/篇)
-📱 发布状态: {success_count}篇成功, {failed_count}篇失败 (成功率: {success_rate:.1f}%)
 🕐 最新生成: {latest_time}
 ⏰ 最早生成: {earliest_time}
 
 💡 查看具体内容:
-🌐 QQ空间: 查看已发布的日记内容
 📁 本地文件: plugins/diary_plugin/data/diaries/{date}_*.json"""
                         await self.send_text(date_text)
                     else:
@@ -1185,7 +1140,7 @@ class DiaryManageCommand(BaseCommand):
                         for diary in diaries:
                             date = diary.get("date", "")
                             word_count = diary.get("word_count", 0)
-                            status = "✅已发布" if diary.get("is_published_qzone", False) else "❌发布失败"
+                            status = "✅已生成"
                             diary_list.append(f"📅 {date} ({word_count}字) {status}")
                         
                         overview_text = f"""📚 日记概览:

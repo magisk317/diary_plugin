@@ -8,7 +8,6 @@
 - 生成天气与日期串
 - 选择模型生成内容（自定义/默认）
 - 智能截断与保存
-- QQ空间发布
 """
 
 import datetime
@@ -20,7 +19,7 @@ from openai import AsyncOpenAI
 from .utils import get_bot_personality,DiaryConstants
 from src.plugin_system.apis import config_api, llm_api, get_logger
 
-from .storage import DiaryStorage, DiaryQzoneAPI
+from .storage import DiaryStorage
 
 
 logger = get_logger("diary_service")
@@ -30,7 +29,6 @@ class DiaryService:
     def __init__(self, plugin_config: Dict[str, Any] | None = None) -> None:
         self.plugin_config = plugin_config or {}
         self.storage = DiaryStorage()
-        self.qzone_api = DiaryQzoneAPI()
 
     # ===================== 配置访问 =====================
     def get_config(self, key: str, default=None):
@@ -240,21 +238,8 @@ class DiaryService:
             weather = self.get_weather_by_emotion(messages)
             date_with_weather = self.get_date_with_weather(date, weather)
 
-            # 读取字数配置：仅使用[min,max]随机
-            min_wc = self.get_config("qzone_publishing.qzone_min_word_count", 250)
-            max_wc = self.get_config("qzone_publishing.qzone_max_word_count", 350)
-            # 规范范围并做上限保护
-            if not isinstance(min_wc, int):
-                min_wc = 250
-            if not isinstance(max_wc, int):
-                max_wc = 350
-            if min_wc < 20:
-                min_wc = 20
-            if max_wc > DiaryConstants.MAX_DIARY_LENGTH:
-                max_wc = DiaryConstants.MAX_DIARY_LENGTH
-            if max_wc < min_wc:
-                max_wc = min_wc
-            target_length = random.randint(min_wc, max_wc)
+            # 默认字数配置
+            target_length = random.randint(250, 350)
 
             personality_desc = personality["core"]
             interest_desc = f"\n我的兴趣爱好:{personality['interest']}" if personality.get("interest") else ""
@@ -279,21 +264,7 @@ class DiaryService:
                         raise ValueError("empty custom prompt")
                 except Exception:
                     style = "diary"
-            if style == "qqzone":
-                prompt = f"""{name}
-我{personality_desc}
-今天日期与天气是：{date_with_weather}
-今天看到了一些聊天内容，其中也有我自己的发言：
-{timeline}
-
-阅读完这些记录，请用大约{target_length}字写一条适合QQ空间的说说：
-随便挑一个喜欢的主题，围绕这个主题写。
-你需要写的日常且口语化的文段，平淡一些，就像微博和贴吧的风格
-遣词造句尽量简短一些。请注意把握聊天内容，不要书写的太有条理，可以有个性。
-{personality['style']}
-请注意不要输出多余内容(包括前后缀，冒号和引号，括号，表情等)，只输出一段说说内容就好。
-说说内容:"""
-            elif style == "diary":
+            if style == "diary":
                 prompt = f"""{name}
 我{personality_desc}
 
@@ -326,12 +297,8 @@ class DiaryService:
             if not success or not diary_content:
                 return False, diary_content or "模型生成日记失败"
 
-            # 截断上限：仅使用最大上限
-            max_length = self.get_config("qzone_publishing.qzone_max_word_count", 350)
-            if not isinstance(max_length, int):
-                max_length = 350
-            if max_length > DiaryConstants.MAX_DIARY_LENGTH:
-                max_length = DiaryConstants.MAX_DIARY_LENGTH
+            # 截断上限
+            max_length = 350
             if len(diary_content) > max_length:
                 diary_content = self.smart_truncate(diary_content, max_length)
 
@@ -343,8 +310,6 @@ class DiaryService:
                 "weather": weather,
                 "bot_messages": getattr(self, "_timeline_stats", {}).get("bot_messages", 0),
                 "user_messages": getattr(self, "_timeline_stats", {}).get("user_messages", 0),
-                "is_published_qzone": False,
-                "qzone_publish_time": None,
                 "status": "生成成功",
                 "error_message": "",
             }
@@ -361,8 +326,6 @@ class DiaryService:
                     "weather": "阴",
                     "bot_messages": 0,
                     "user_messages": 0,
-                    "is_published_qzone": False,
-                    "qzone_publish_time": None,
                     "status": "报错:生成失败",
                     "error_message": f"原因:{str(e)}",
                 }
@@ -370,35 +333,3 @@ class DiaryService:
             except Exception:
                 pass
             return False, f"生成日记时出错: {str(e)}"
-
-    async def publish_to_qzone(self, date: str, diary_content: str) -> bool:
-        try:
-            napcat_host = self.get_config("qzone_publishing.napcat_host", "127.0.0.1")
-            napcat_port = self.get_config("qzone_publishing.napcat_port", "9998")
-            napcat_token = self.get_config("qzone_publishing.napcat_token", "")
-            success = await self.qzone_api.publish_diary(diary_content, napcat_host, napcat_port, napcat_token)
-
-            diary_data = await self.storage.get_diary(date)
-            if diary_data:
-                if success:
-                    diary_data["is_published_qzone"] = True
-                    diary_data["qzone_publish_time"] = time.time()
-                    diary_data["status"] = "一切正常"
-                    diary_data["error_message"] = ""
-                else:
-                    diary_data["is_published_qzone"] = False
-                    diary_data["status"] = "报错:发说说失败"
-                    diary_data["error_message"] = "原因:QQ空间发布失败,可能是cookie过期或网络问题"
-                await self.storage.save_diary(diary_data)
-            return success
-        except Exception as e:
-            logger.error(f"发布QQ空间失败: {e}")
-            diary_data = await self.storage.get_diary(date)
-            if diary_data:
-                diary_data["is_published_qzone"] = False
-                diary_data["status"] = "报错:发说说失败"
-                diary_data["error_message"] = f"原因:发布异常 - {str(e)}"
-                await self.storage.save_diary(diary_data)
-            return False
-
-

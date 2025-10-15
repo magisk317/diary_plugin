@@ -273,59 +273,22 @@ class DiaryScheduler:
 
     async def _generate_daily_diary(self):
         """
-        生成每日日记并发送到配置的群组
+        定时生成日记任务 - 为每个群组独立生成日记
         
-        定时任务的核心执行方法，创建日记生成Action并执行。
-        生成成功后会将日记发送到配置的目标群组。
+        定时任务的核心执行方法，为每个配置的群组独立生成和发送日记。
+        每个群组会收到基于自己群组消息的个性化日记。
         
         Note:
-            根据 schedule.target_chats 配置发送日记到指定群组
+            根据 schedule.target_chats 配置为每个群组独立生成和发送日记
         """
         try:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
-            
-            diary_action = DiaryGeneratorAction(
-                action_data={"date": today, "target_chats": [], "is_manual": False},
-                action_reasoning="定时生成日记",
-                cycle_timers={},
-                thinking_id="scheduled_diary",
-                chat_stream=MockChatStream(),
-                log_prefix="[ScheduledDiary]",
-                plugin_config=self.plugin.config,
-                action_message=MockMessage()  # 使用MockMessage代替None
-            )
-            
-            success, result = await diary_action.generate_diary(today)
-            
-            if success:
-                self.logger.info(f"定时日记生成成功: {today} ({len(result)}字)")
-                
-                # 发送日记到配置的群组
-                await self._send_diary_to_groups(today, result)
-            else:
-                self.logger.error(f"定时日记生成失败: {today} - {result}")
-                
-        except Exception as e:
-            import traceback
-            self.logger.error(f"定时生成日记出错: {e}")
-            self.logger.error(f"完整堆栈:\n{traceback.format_exc()}")
-    
-    async def _send_diary_to_groups(self, date: str, diary_content: str):
-        """
-        发送日记到配置的目标群组
-        
-        Args:
-            date (str): 日记日期
-            diary_content (str): 日记内容
-        """
-        try:
-            from src.plugin_system.apis import chat_api, send_api
             
             # 获取目标群组配置
             target_chats = self.plugin.get_config("schedule.target_chats", [])
             
             if not target_chats:
-                self.logger.debug("未配置目标群组，跳过发送")
+                self.logger.debug("未配置目标群组，跳过定时日记生成")
                 return
             
             # 解析群组ID
@@ -335,48 +298,93 @@ class DiaryScheduler:
                     group_ids.append(chat[6:])  # 去掉 "group:" 前缀
             
             if not group_ids:
-                self.logger.debug("未配置群组，跳过发送")
+                self.logger.debug("未配置群组，跳过定时日记生成")
                 return
+            
+            # 为每个群组独立生成日记
+            success_count = 0
+            for group_id in group_ids:
+                try:
+                    self.logger.info(f"开始为群组 {group_id} 生成日记...")
+                    
+                    # 为当前群组创建日记生成器
+                    diary_action = DiaryGeneratorAction(
+                        action_data={"date": today, "target_chats": [f"group:{group_id}"], "is_manual": False},
+                        action_reasoning=f"定时生成群组 {group_id} 的日记",
+                        cycle_timers={},
+                        thinking_id=f"scheduled_diary_{group_id}",
+                        chat_stream=MockChatStream(),
+                        log_prefix=f"[ScheduledDiary-{group_id}]",
+                        plugin_config=self.plugin.config,
+                        action_message=MockMessage()
+                    )
+                    
+                    # 生成当前群组的日记
+                    success, result = await diary_action.generate_diary(today)
+                    
+                    if success:
+                        self.logger.info(f"群组 {group_id} 日记生成成功: {today} ({len(result)}字)")
+                        
+                        # 发送日记到当前群组
+                        await self._send_diary_to_single_group(group_id, today, result)
+                        success_count += 1
+                    else:
+                        self.logger.error(f"群组 {group_id} 日记生成失败: {today} - {result}")
+                        
+                except Exception as e:
+                    self.logger.error(f"为群组 {group_id} 生成日记出错: {e}")
+                    import traceback
+                    self.logger.error(f"完整堆栈:\n{traceback.format_exc()}")
+            
+            if success_count > 0:
+                self.logger.info(f"定时日记生成完成: 成功 {success_count}/{len(group_ids)} 个群组")
+            else:
+                self.logger.warning("定时日记生成失败: 所有群组均未成功")
+                
+        except Exception as e:
+            import traceback
+            self.logger.error(f"定时生成日记出错: {e}")
+            self.logger.error(f"完整堆栈:\n{traceback.format_exc()}")
+    
+    async def _send_diary_to_single_group(self, group_id: str, date: str, diary_content: str):
+        """
+        发送日记到单个群组
+        
+        Args:
+            group_id (str): 群组ID
+            date (str): 日记日期
+            diary_content (str): 日记内容
+        """
+        try:
+            from src.plugin_system.apis import chat_api, send_api
             
             # 构建消息内容
             message_text = f"📅 {date} 的日记\n\n{diary_content}"
             
-            # 发送到每个群组
-            success_count = 0
-            for group_id in group_ids:
-                try:
-                    # 获取群聊流
-                    stream = chat_api.get_stream_by_group_id(group_id)
-                    if not stream:
-                        self.logger.warning(f"无法获取群组流: {group_id}")
-                        continue
-                    
-                    # 使用 send_api 发送文本消息
-                    result = await send_api.text_to_stream(
-                        text=message_text,
-                        stream_id=stream.stream_id,
-                        set_reply=False,
-                        typing=False,
-                        storage_message=True
-                    )
-                    
-                    if result:
-                        success_count += 1
-                        self.logger.info(f"日记已发送到群组: {group_id}")
-                    else:
-                        self.logger.warning(f"发送日记到群组 {group_id} 失败: send_api 返回 False")
-                    
-                except Exception as e:
-                    self.logger.error(f"发送日记到群组 {group_id} 失败: {e}")
-                    import traceback
-                    self.logger.debug(f"堆栈: {traceback.format_exc()}")
+            # 获取群聊流
+            stream = chat_api.get_stream_by_group_id(group_id)
+            if not stream:
+                self.logger.warning(f"无法获取群组流: {group_id}")
+                return False
             
-            if success_count > 0:
-                self.logger.info(f"日记发送完成: 成功 {success_count}/{len(group_ids)} 个群组")
+            # 使用 send_api 发送文本消息
+            result = await send_api.text_to_stream(
+                text=message_text,
+                stream_id=stream.stream_id,
+                set_reply=False,
+                typing=False,
+                storage_message=True
+            )
+            
+            if result:
+                self.logger.info(f"日记已发送到群组: {group_id}")
+                return True
             else:
-                self.logger.warning("日记发送失败: 所有群组均未成功")
+                self.logger.warning(f"发送日记到群组 {group_id} 失败: send_api 返回 False")
+                return False
                 
         except Exception as e:
-            self.logger.error(f"发送日记到群组出错: {e}")
+            self.logger.error(f"发送日记到群组 {group_id} 失败: {e}")
             import traceback
-            self.logger.error(f"完整堆栈:\n{traceback.format_exc()}")
+            self.logger.debug(f"堆栈: {traceback.format_exc()}")
+            return False

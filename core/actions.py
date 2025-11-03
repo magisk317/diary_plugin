@@ -348,6 +348,7 @@ class DiaryGeneratorAction(BaseAction):
         self.storage = DiaryStorage()
         self.diary_service = DiaryService(plugin_config=self.plugin_config)
         self.chat_resolver = ChatIdResolver()
+        self._current_scope: Dict[str, Any] = {"type": "global", "id": "all", "label": "global"}
 
     async def get_daily_messages(self, date: str, target_chats: List[str] = None, end_hour: int = None, end_minute: int = None) -> List[Any]:
         """
@@ -399,24 +400,83 @@ class DiaryGeneratorAction(BaseAction):
                     end_time = (date_obj + datetime.timedelta(days=1)).timestamp()
             
             all_messages = []
+            self._current_scope = {"type": "global", "id": "all", "label": "global"}
             
             if target_chats:
-                # 处理指定聊天
-                for chat_id in target_chats:
+                resolved_targets: List[Dict[str, Any]] = []
+                for raw_target in target_chats:
+                    chat_config = (raw_target or "").strip()
+                    if not chat_config:
+                        continue
+                    
+                    scope_entry: Optional[Dict[str, Any]] = None
+                    chat_id: Optional[str] = None
+                    
+                    if chat_config.startswith("group:"):
+                        group_id = chat_config[6:]
+                        chat_id = self.chat_resolver._query_chat_id_from_database(group_id, True)
+                        if chat_id:
+                            scope_entry = {
+                                "type": "group",
+                                "id": group_id,
+                                "label": f"group:{group_id}",
+                                "chat_id": chat_id
+                            }
+                        else:
+                            logger.warning(f"未从数据库找到群聊 {group_id} 的stream_id，跳过")
+                    elif chat_config.startswith("private:"):
+                        user_id = chat_config[8:]
+                        chat_id = self.chat_resolver._query_chat_id_from_database(user_id, False)
+                        if chat_id:
+                            scope_entry = {
+                                "type": "private",
+                                "id": user_id,
+                                "label": f"private:{user_id}",
+                                "chat_id": chat_id
+                            }
+                        else:
+                            logger.warning(f"未从数据库找到私聊 {user_id} 的stream_id，跳过")
+                    else:
+                        # 视为直接提供的chat_id
+                        chat_id = chat_config
+                        scope_entry = {
+                            "type": "chat",
+                            "id": chat_config,
+                            "label": chat_config,
+                            "chat_id": chat_config
+                        }
+                    
+                    if not chat_id or scope_entry is None:
+                        continue
+                    
                     try:
-                        # 关键:设置 filter_mai=False 来包含Bot消息
                         messages = message_api.get_messages_by_time_in_chat(
                             chat_id=chat_id,
                             start_time=start_time,
                             end_time=end_time,
                             limit=0,
                             limit_mode="earliest",
-                            filter_mai=False,  # 不过滤Bot消息
-                            filter_command=False  # 不过滤命令消息
+                            filter_mai=False,
+                            filter_command=False
                         )
                         all_messages.extend(messages)
+                        resolved_targets.append(scope_entry)
+                        logger.debug(f"[目标聊天] {chat_config} → {chat_id}, 获取{len(messages)}条消息")
                     except Exception as e:
-                        logger.error(f"获取聊天 {chat_id} 消息失败: {e}")
+                        logger.error(f"获取聊天 {chat_config} (解析为 {chat_id}) 消息失败: {e}")
+                
+                if resolved_targets:
+                    if len(resolved_targets) == 1:
+                        self._current_scope = resolved_targets[0]
+                    else:
+                        self._current_scope = {
+                            "type": "multi",
+                            "id": ",".join(sorted(target["label"] for target in resolved_targets if target.get("label"))),
+                            "label": "multi",
+                            "targets": [target["label"] for target in resolved_targets if target.get("label")]
+                        }
+                else:
+                    logger.info("指定的 target_chats 未解析到有效聊天，回退为全局模式")
             else:
                 # 从配置文件读取聊天配置
                 config_target_chats = self.get_config("schedule.target_chats", [])
@@ -483,6 +543,14 @@ class DiaryGeneratorAction(BaseAction):
                 
                 # 重新按时间排序
                 filtered_messages.sort(key=lambda x: x.time)
+                if len(chat_message_counts) == 1 and not target_chats:
+                    sole_chat_id = next(iter(chat_message_counts))
+                    self._current_scope = {
+                        "type": "chat",
+                        "id": sole_chat_id,
+                        "label": sole_chat_id,
+                        "chat_id": sole_chat_id
+                    }
                 logger.info(f"[过滤调试] 消息过滤结果: 原始{len(all_messages)}条 → 过滤后{len(filtered_messages)}条")
                 logger.info(f"[过滤调试] 聊天过滤结果: 总聊天{len(chat_message_counts)}个 → 保留{kept_chats}个,过滤{filtered_chats}个")
                 return filtered_messages
@@ -917,13 +985,20 @@ class DiaryGeneratorAction(BaseAction):
             # 1. 获取bot人设
             personality = await get_bot_personality()
             # 2. 获取当天消息（使用内置API）
+            if target_chats is None:
+                target_chats = self.action_data.get("target_chats")
             messages = await self.get_daily_messages(date, target_chats)
             
             if len(messages) < self.get_config("diary_generation.min_message_count", DiaryConstants.MIN_MESSAGE_COUNT):
                 return False, f"当天消息数量不足({len(messages)}条),无法生成日记"
             
             # 由共享服务负责完整生成逻辑（含token截断/模型选择/保存）
-            success, diary_content = await self.diary_service.generate_diary_from_messages(date, messages, force_50k=True)
+            success, diary_content = await self.diary_service.generate_diary_from_messages(
+                date,
+                messages,
+                force_50k=True,
+                scope=self._current_scope,
+            )
             
             if not success or not diary_content:
                 return False, diary_content or "模型生成日记失败"

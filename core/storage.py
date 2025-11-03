@@ -37,6 +37,37 @@ from .utils import ChatIdResolver, format_date_str
 logger = get_logger("diary_plugin.storage")
 
 
+def _scope_label_from_record(record: Dict[str, Any]) -> str:
+    """提取日记记录中的范围标签，兼容旧数据结构。"""
+    if not isinstance(record, dict):
+        return "global"
+    
+    scope_label = record.get("scope_label")
+    if scope_label:
+        return str(scope_label)
+    
+    scope = record.get("scope")
+    if isinstance(scope, dict):
+        label = scope.get("label")
+        if label:
+            return str(label)
+        scope_type = scope.get("type")
+        scope_id = scope.get("id")
+        if scope_type and scope_id and scope_type != "multi":
+            return f"{scope_type}:{scope_id}"
+        if scope_type:
+            return str(scope_type)
+    
+    return "global"
+
+
+def _matches_scope(record: Dict[str, Any], scope_label: Optional[str]) -> bool:
+    """判断日记记录是否匹配目标范围。"""
+    if not scope_label:
+        return True
+    return _scope_label_from_record(record) == scope_label
+
+
 class DiaryStorage:
     """
     JSON文件存储的日记管理类
@@ -117,8 +148,8 @@ class DiaryStorage:
     
     # _format_date_str方法已移至utils模块的format_date_str函数
     
-    async def get_diary(self, date: str) -> Optional[Dict[str, Any]]:
-        """获取指定日期的最新日记"""
+    async def get_diary(self, date: str, scope_label: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """获取指定日期的最新日记，可按范围过滤"""
         try:
             if not os.path.exists(self.data_dir):
                 return None
@@ -129,7 +160,8 @@ class DiaryStorage:
                     file_path = os.path.join(self.data_dir, filename)
                     with open(file_path, 'r', encoding='utf-8') as f:
                         diary_data = json.load(f)
-                        date_files.append(diary_data)
+                        if _matches_scope(diary_data, scope_label):
+                            date_files.append(diary_data)
             
             if date_files:
                 latest_diary = max(date_files, key=lambda x: x.get('generation_time', 0))
@@ -140,8 +172,8 @@ class DiaryStorage:
             logger.error(f"读取日记失败: {e}")
             return None
     
-    async def get_diaries_by_date(self, date: str) -> List[Dict[str, Any]]:
-        """获取指定日期的所有日记"""
+    async def get_diaries_by_date(self, date: str, scope_label: Optional[str] = None) -> List[Dict[str, Any]]:
+        """获取指定日期的所有日记，可按范围过滤"""
         try:
             if not os.path.exists(self.data_dir):
                 return []
@@ -152,7 +184,8 @@ class DiaryStorage:
                     file_path = os.path.join(self.data_dir, filename)
                     with open(file_path, 'r', encoding='utf-8') as f:
                         diary_data = json.load(f)
-                        date_files.append(diary_data)
+                        if _matches_scope(diary_data, scope_label):
+                            date_files.append(diary_data)
             
             # 按生成时间排序
             date_files.sort(key=lambda x: x.get('generation_time', 0))
@@ -161,8 +194,8 @@ class DiaryStorage:
             logger.error(f"读取日期日记失败: {e}")
             return []
     
-    async def list_diaries(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """列出最近的日记"""
+    async def list_diaries(self, limit: int = 10, scope_label: Optional[str] = None) -> List[Dict[str, Any]]:
+        """列出最近的日记，可按范围过滤"""
         try:
             diary_files = []
             
@@ -174,7 +207,8 @@ class DiaryStorage:
                     file_path = os.path.join(self.data_dir, filename)
                     with open(file_path, 'r', encoding='utf-8') as f:
                         diary_data = json.load(f)
-                        diary_files.append(diary_data)
+                        if _matches_scope(diary_data, scope_label):
+                            diary_files.append(diary_data)
             
             diary_files.sort(key=lambda x: x.get('generation_time', 0), reverse=True)
             return diary_files[:limit] if limit > 0 else diary_files

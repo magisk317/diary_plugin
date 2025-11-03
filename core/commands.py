@@ -133,6 +133,31 @@ class DiaryManageCommand(BaseCommand):
         cleaned_param = re.sub(r'\s+', ' ', param.strip())
         return cleaned_param.split(' ')
 
+    def _detect_scope_label(self) -> str:
+        """根据当前消息环境推断范围标签（群聊/全局）。"""
+        try:
+            if hasattr(self.message, "message_info"):
+                group_info = getattr(self.message.message_info, "group_info", None)
+                if group_info and getattr(group_info, "group_id", None):
+                    return f"group:{group_info.group_id}"
+        except Exception as exc:
+            logger.debug(f"[DEBUG] 范围识别失败: {exc}")
+        return "global"
+
+    def _format_scope_desc(self, scope_label: str) -> str:
+        """将范围标签转换为友好的描述文本。"""
+        if not scope_label:
+            return "全局"
+        if scope_label.startswith("group:"):
+            return f"群 {scope_label[6:]}"
+        if scope_label.startswith("private:"):
+            return f"私聊 {scope_label[8:]}"
+        if scope_label == "global":
+            return "全局"
+        if scope_label == "multi":
+            return "多聊天"
+        return scope_label
+
     async def _show_main_help(self):
         """显示主帮助信息 - 简洁概览"""
         is_admin = str(self.message.message_info.user_info.user_id) in [str(admin_id) for admin_id in self.get_config("plugin.admin_qqs", [])]
@@ -336,7 +361,7 @@ class DiaryManageCommand(BaseCommand):
         else:
             return (date_obj + datetime.timedelta(days=1)).timestamp()
 
-    async def _get_messages_with_context_detection(self, date: str) -> Tuple[List[Any], str]:
+    async def _get_messages_with_context_detection(self, date: str) -> Tuple[List[Any], str, Dict[str, Any]]:
         """
         根据命令环境智能获取消息（包含图片）
         
@@ -347,9 +372,10 @@ class DiaryManageCommand(BaseCommand):
             date (str): 要查询的日期，格式为 YYYY-MM-DD
         
         Returns:
-            Tuple[List[Any], str]: 返回消息列表和环境描述
+            Tuple[List[Any], str, Dict[str, Any]]: 返回消息列表、环境描述和范围信息
                 - List[Any]: 获取到的消息列表（包含文本和图片消息）
                 - str: 环境描述字符串，用于日志和用户反馈
+                - Dict[str, Any]: 当前命令对应的范围信息（group/global等）
         
         Raises:
             ValueError: 当日期格式无效时抛出
@@ -369,6 +395,7 @@ class DiaryManageCommand(BaseCommand):
                 raise ValueError(f"无效的日期参数: {date}")
             
             error_context = "时间计算阶段"
+            scope_info: Dict[str, Any] = {"type": "global", "id": "all", "label": "global"}
             # 计算时间范围
             try:
                 date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
@@ -401,6 +428,12 @@ class DiaryManageCommand(BaseCommand):
                     stream_id = chat_resolver._query_chat_id_from_database(group_id, True)
                     
                     if stream_id:
+                        scope_info = {
+                            "type": "group",
+                            "id": group_id,
+                            "label": f"group:{group_id}",
+                            "chat_id": stream_id,
+                        }
                         try:
                             messages = message_api.get_messages_by_time_in_chat(
                                 chat_id=stream_id,
@@ -464,15 +497,15 @@ class DiaryManageCommand(BaseCommand):
                 messages = []
             
             logger.info(f"[DEBUG] 消息获取完成: {context_desc}, 共{len(messages)}条消息")
-            return messages, context_desc
+            return messages, context_desc, scope_info
             
         except ValueError as ve:
             logger.error(f"[DEBUG] 参数验证失败 ({error_context}): {ve}")
-            return [], f"【参数错误】"
+            return [], f"【参数错误】", {"type": "global", "id": "all", "label": "global"}
         except Exception as e:
             logger.error(f"[DEBUG] 消息获取失败 ({error_context}): {e}")
             logger.error(f"[DEBUG] 错误详情: 日期={date}, 阶段={error_context}")
-            return [], f"【{error_context}失败】"
+            return [], f"【{error_context}失败】", {"type": "global", "id": "all", "label": "global"}
 
     def _analyze_user_activity(self, messages: List[Any], bot_qq: str) -> List[Dict[str, Any]]:
         """
@@ -614,7 +647,7 @@ class DiaryManageCommand(BaseCommand):
                 raise ValueError(f"无效的Bot QQ参数: {bot_qq}")
             
             error_context = "消息获取阶段"
-            messages, context_desc = await self._get_messages_with_context_detection(date)
+            messages, context_desc, _scope_info = await self._get_messages_with_context_detection(date)
             
             # 验证消息数据
             if not isinstance(messages, list):
@@ -760,13 +793,14 @@ class DiaryManageCommand(BaseCommand):
         else:
             await self.send_text("❌ 编号无效，请输入正确编号")
 
-    async def _show_diary_list(self, diary_list: List[Dict], date: str):
+    async def _show_diary_list(self, diary_list: List[Dict[str, Any]], date: str, scope_label: Optional[str] = None):
         """
         显示日记列表
         
         Args:
             diary_list (List[Dict]): 日记列表
             date (str): 日期字符串
+            scope_label (Optional[str]): 范围标签，控制提示信息
         """
         diary_list_text = []
         for idx, diary in enumerate(diary_list, 1):
@@ -775,8 +809,12 @@ class DiaryManageCommand(BaseCommand):
             status = "✅已生成"
             diary_list_text.append(f"{idx}. {gen_time.strftime('%H:%M')} | {word_count}字 | {status}")
 
+        scope_suffix = ""
+        if scope_label:
+            scope_suffix = f" ({self._format_scope_desc(scope_label)})"
+
         await self.send_text(
-            f"📅 {date} 的日记列表:\n" + "\n".join(diary_list_text) +
+            f"📅 {date} 的日记列表{scope_suffix}:\n" + "\n".join(diary_list_text) +
             "\n\n输入 /diary view {日期} {编号} 查看具体内容"
         )
 
@@ -1010,7 +1048,7 @@ class DiaryManageCommand(BaseCommand):
                         end_time = (date_obj + datetime.timedelta(days=1)).timestamp()
                     
                     # 根据环境检测获取消息
-                    messages, context_desc = await self._get_messages_with_context_detection(date)
+                    messages, context_desc, scope_info = await self._get_messages_with_context_detection(date)
                     logger.info(f"generate指令环境检测: {context_desc}, 获取到{len(messages)}条消息")
                     
                     min_message_count = DiaryConstants.MIN_MESSAGE_COUNT  # 硬编码最少消息数
@@ -1020,7 +1058,12 @@ class DiaryManageCommand(BaseCommand):
                     
                     # 使用共享服务生成日记
                     service = DiaryService(plugin_config=self.plugin_config)
-                    success, result = await service.generate_diary_from_messages(date, messages, force_50k=True)
+                    success, result = await service.generate_diary_from_messages(
+                        date,
+                        messages,
+                        force_50k=True,
+                        scope=scope_info,
+                    )
                     if success:
                         if not self.get_config("diary_generation.enable_syle_send", False):
                             await self.send_text(f"日记生成成功！\n{date}:\n{result}")
@@ -1042,15 +1085,19 @@ class DiaryManageCommand(BaseCommand):
                     param = re.sub(r'\s+', ' ', param.strip())
                 
                 if param == "all":
-                    # 显示详细统计和趋势分析
-                    stats = await self.storage.get_stats()
-                    diaries = await self.storage.list_diaries(limit=0)
+                    scope_label = self._detect_scope_label()
+                    scope_filter = None if scope_label == "global" else scope_label
+                    diaries = await self.storage.list_diaries(limit=0, scope_label=scope_filter)
+                    fallback_used = False
+                    
+                    if not diaries and scope_filter:
+                        diaries = await self.storage.list_diaries(limit=0)
+                        fallback_used = True
+                        scope_label = "global"
+                        scope_filter = None
                     
                     if diaries:
-                        
-                        # 计算日期范围
-                        dates = [diary.get("date", "") for diary in diaries if diary.get("date")]
-                        dates.sort()
+                        dates = sorted(diary.get("date", "") for diary in diaries if diary.get("date"))
                         if len(dates) > 1:
                             date_range = f"{dates[0]} ~ {dates[-1]}"
                         elif len(dates) == 1:
@@ -1058,23 +1105,24 @@ class DiaryManageCommand(BaseCommand):
                         else:
                             date_range = "无"
                         
-                        # 计算最长最短日记
+                        total_count = len(diaries)
+                        total_words = sum(diary.get("word_count", 0) for diary in diaries)
+                        avg_words = total_words // total_count if total_count else 0
+                        
+                        latest_entry = diaries[0]
+                        latest_time = datetime.datetime.fromtimestamp(latest_entry.get("generation_time", 0))
                         max_diary = max(diaries, key=lambda x: x.get('word_count', 0))
                         min_diary = min(diaries, key=lambda x: x.get('word_count', 0))
                         
-                        latest_time = datetime.datetime.fromtimestamp(max(diaries, key=lambda x: x.get('generation_time', 0)).get('generation_time', 0))
-                        
-                        # 计算下次定时任务时间
                         next_schedule = await self._get_next_schedule_time()
-                        
-                        # 计算本周统计
                         weekly_stats = await self._get_weekly_stats(diaries)
+                        scope_desc = self._format_scope_desc(scope_label)
                         
-                        stats_text = f"""📚 日记概览:
+                        stats_text = f"""📚 日记概览 ({scope_desc}):
 
 📊 详细统计:
-📖 总日记数: {stats['total_count']}篇
-📝 总字数: {stats['total_words']}字 (平均: {stats['avg_words']}字/篇)
+📖 总日记数: {total_count}篇
+📝 总字数: {total_words}字 (平均: {avg_words}字/篇)
 📅 日期范围: {date_range} ({len(set(dates))}天)
 🕐 最近生成: {latest_time.strftime('%Y-%m-%d %H:%M')}
 ⏰ 下次定时: {next_schedule}
@@ -1083,6 +1131,8 @@ class DiaryManageCommand(BaseCommand):
 📝 本周平均: {weekly_stats['avg_words']}字/篇 ({weekly_stats['trend']})
 🔥 最长日记: {max_diary.get('date', '无')} ({max_diary.get('word_count', 0)}字)
 📏 最短日记: {min_diary.get('date', '无')} ({min_diary.get('word_count', 0)}字)"""
+                        if fallback_used:
+                            stats_text += "\n\n💡 当前群暂无专属日记，已展示全局数据。"
                         await self.send_text(stats_text)
                     else:
                         await self.send_text("📭 还没有任何日记记录")
@@ -1092,7 +1142,15 @@ class DiaryManageCommand(BaseCommand):
                 elif param and re.match(r'\d{4}-\d{1,2}-\d{1,2}', param):
                     # 显示指定日期的日记概况
                     date = format_date_str(param)
-                    date_diaries = await self.storage.get_diaries_by_date(date)
+                    scope_label = self._detect_scope_label()
+                    scope_filter = None if scope_label == "global" else scope_label
+                    date_diaries = await self.storage.get_diaries_by_date(date, scope_filter)
+                    fallback_used = False
+                    
+                    if not date_diaries and scope_filter:
+                        date_diaries = await self.storage.get_diaries_by_date(date)
+                        fallback_used = True
+                        scope_label = "global"
                     
                     if date_diaries:
                         # 计算当天统计
@@ -1112,7 +1170,8 @@ class DiaryManageCommand(BaseCommand):
                             status = "✅已生成"
                             diary_list.append(f"{i}. {gen_time.strftime('%H:%M')} ({word_count}字) {status}")
                         
-                        date_text = f"""📅 {date} 日记概况:
+                        scope_desc = self._format_scope_desc(scope_label)
+                        date_text = f"""📅 {date} 日记概况 ({scope_desc}):
 
 📝 当天日记: 共{len(date_diaries)}篇
 {chr(10).join(diary_list)}
@@ -1124,6 +1183,8 @@ class DiaryManageCommand(BaseCommand):
 
 💡 查看具体内容:
 📁 本地文件: plugins/diary_plugin/data/diaries/{date}_*.json"""
+                        if fallback_used:
+                            date_text += "\n\n💡 当前群暂无专属日记，已展示全局内容。"
                         await self.send_text(date_text)
                     else:
                         await self.send_text(f"📭 没有找到 {date} 的日记")
@@ -1131,10 +1192,24 @@ class DiaryManageCommand(BaseCommand):
                     
                 else:
                     # 显示基础概览（统计 + 最近10篇）
-                    stats = await self.storage.get_stats()
-                    diaries = await self.storage.list_diaries(limit=10)
+                    scope_label = self._detect_scope_label()
+                    scope_filter = None if scope_label == "global" else scope_label
+                    all_diaries = await self.storage.list_diaries(limit=0, scope_label=scope_filter)
+                    fallback_used = False
                     
-                    if diaries:
+                    if not all_diaries and scope_filter:
+                        all_diaries = await self.storage.list_diaries(limit=0)
+                        fallback_used = True
+                        scope_label = "global"
+                    
+                    if all_diaries:
+                        total_count = len(all_diaries)
+                        total_words = sum(diary.get("word_count", 0) for diary in all_diaries)
+                        avg_words = total_words // total_count if total_count else 0
+                        latest_date = all_diaries[0].get("date", "无")
+                        diaries = all_diaries[:10]
+                        scope_desc = self._format_scope_desc(scope_label)
+                    
                         # 构建日记列表
                         diary_list = []
                         for diary in diaries:
@@ -1143,18 +1218,20 @@ class DiaryManageCommand(BaseCommand):
                             status = "✅已生成"
                             diary_list.append(f"📅 {date} ({word_count}字) {status}")
                         
-                        overview_text = f"""📚 日记概览:
+                        overview_text = f"""📚 日记概览 ({scope_desc}):
 
 📊 统计信息:
-📖 总日记数: {stats['total_count']}篇
-📝 总字数: {stats['total_words']}字
-📏 平均字数: {stats['avg_words']}字/篇
-📅 最新日记: {stats['latest_date']}
+📖 总日记数: {total_count}篇
+📝 总字数: {total_words}字
+📏 平均字数: {avg_words}字/篇
+📅 最新日记: {latest_date}
 
 📋 最近日记 (10篇):
 {chr(10).join(diary_list)}
 
 💡 提示: 使用 /diary list [日期] 查看指定日期概况"""
+                        if fallback_used:
+                            overview_text += "\n\n💡 当前群暂无专属日记，已展示全局内容。"
                         
                         await self.send_text(overview_text)
                     else:
@@ -1309,7 +1386,15 @@ class DiaryManageCommand(BaseCommand):
                 try:
                     args = self._parse_command_params(param) if param else []
                     date = format_date_str(args[0] if args else datetime.datetime.now())
-                    diary_list = await self.storage.get_diaries_by_date(date)
+                    scope_label = self._detect_scope_label()
+                    scope_filter = None if scope_label == "global" else scope_label
+                    diary_list = await self.storage.get_diaries_by_date(date, scope_filter)
+                    fallback_used = False
+                    
+                    if not diary_list and scope_filter:
+                        diary_list = await self.storage.get_diaries_by_date(date)
+                        fallback_used = True
+                        scope_label = "global"
                     
                     if not diary_list:
                         await self.send_text(f"📭 没有找到 {date} 的日记")
@@ -1317,11 +1402,16 @@ class DiaryManageCommand(BaseCommand):
                     
                     # 按生成时间排序
                     diary_list.sort(key=lambda x: x.get('generation_time', 0))
+                    
+                    # 若回退到全局，提示用户
+                    if fallback_used:
+                        await self.send_text("💡 当前群暂无专属日记，以下展示全局内容。")
+                    
                     # 检查是否指定了编号
                     if len(args) > 1 and args[1].isdigit():
                         await self._show_specific_diary(diary_list, int(args[1]) - 1, date)
                     else:
-                        await self._show_diary_list(diary_list, date)
+                        await self._show_diary_list(diary_list, date, scope_label=scope_label if scope_label else None)
                     
                     return True, "查看完成", True
                     

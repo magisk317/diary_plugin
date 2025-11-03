@@ -320,7 +320,7 @@ class DiaryScheduler:
                     )
                     
                     # 生成当前群组的日记
-                    success, result = await diary_action.generate_diary(today)
+                    success, result = await diary_action.generate_diary(today, target_chats=[f"group:{group_id}"])
                     
                     if success:
                         self.logger.info(f"群组 {group_id} 日记生成成功: {today} ({len(result)}字)")

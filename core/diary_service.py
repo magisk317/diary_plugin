@@ -13,7 +13,7 @@
 import datetime
 import random
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI
 from .utils import get_bot_personality,DiaryConstants
@@ -29,6 +29,28 @@ class DiaryService:
     def __init__(self, plugin_config: Dict[str, Any] | None = None) -> None:
         self.plugin_config = plugin_config or {}
         self.storage = DiaryStorage()
+
+    def _normalize_scope(self, scope: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """将上下文范围信息标准化，便于持久化和检索。"""
+        normalized: Dict[str, Any] = {"type": "global", "id": "all", "label": "global"}
+        if not scope:
+            return normalized
+        
+        for key in ("type", "id", "label", "chat_id", "targets"):
+            value = scope.get(key)
+            if value:
+                normalized[key] = value
+        
+        if not normalized.get("label"):
+            scope_type = normalized.get("type")
+            scope_id = normalized.get("id")
+            if scope_type and scope_id and scope_type != "multi":
+                normalized["label"] = f"{scope_type}:{scope_id}"
+            elif scope_type:
+                normalized["label"] = scope_type
+            else:
+                normalized["label"] = "global"
+        return normalized
 
     # ===================== 配置访问 =====================
     def get_config(self, key: str, default=None):
@@ -224,6 +246,7 @@ class DiaryService:
         date: str,
         messages: List[Any],
         force_50k: bool = True,
+        scope: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str]:
         try:
             personality = await get_bot_personality()
@@ -237,6 +260,7 @@ class DiaryService:
 
             weather = self.get_weather_by_emotion(messages)
             date_with_weather = self.get_date_with_weather(date, weather)
+            scope_info = self._normalize_scope(scope)
 
             # 默认字数配置
             target_length = random.randint(250, 350)
@@ -312,12 +336,15 @@ class DiaryService:
                 "user_messages": getattr(self, "_timeline_stats", {}).get("user_messages", 0),
                 "status": "生成成功",
                 "error_message": "",
+                "scope": scope_info,
+                "scope_label": scope_info.get("label", "global"),
             }
             await self.storage.save_diary(diary_record)
             return True, diary_content
         except Exception as e:
             logger.error(f"生成日记失败: {e}")
             try:
+                scope_info = self._normalize_scope(scope)
                 failed_record = {
                     "date": date,
                     "diary_content": "",
@@ -328,6 +355,8 @@ class DiaryService:
                     "user_messages": 0,
                     "status": "报错:生成失败",
                     "error_message": f"原因:{str(e)}",
+                    "scope": scope_info,
+                    "scope_label": scope_info.get("label", "global"),
                 }
                 await self.storage.save_diary(failed_record)
             except Exception:
